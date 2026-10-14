@@ -12,6 +12,11 @@ service cloud.firestore {
       allow read: if true;
     }
 
+    // System metadata for seed tracking
+    match /systemMetadata/{docId} {
+      allow read, write: if true;
+    }
+
     function isValidReturnItem(data) {
       return data.barcode is string && data.barcode.size() <= 128
         && data.itemName is string && data.itemName.size() <= 256

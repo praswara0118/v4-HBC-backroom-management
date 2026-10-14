@@ -29,6 +29,7 @@ import {
   ShieldCheck,
   AlertTriangle,
   FileText,
+  Loader2,
 } from 'lucide-react';
 
 interface DatabaseManagementViewProps {
@@ -189,44 +190,136 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
     setSelectedProductIds(next);
   };
 
-  // Delete handlers
-  const handleDeleteSelected = () => {
+  // In-app interactive confirmation dialog state
+  const [deleteDialog, setDeleteDialog] = useState<{
+    isOpen: boolean;
+    mode: 'SELECTED' | 'CLEAR_ALL' | 'CLEAR_CONSIGNMENT' | 'CLEAR_OUTRIGHT' | 'SINGLE';
+    productIds?: string[];
+    singleProduct?: MasterProduct;
+    title: string;
+    description: string;
+    badgeText: string;
+    confirmButtonText: string;
+  } | null>(null);
+  const [isDeletingLoading, setIsDeletingLoading] = useState(false);
+
+  // Trigger Confirmation Dialogs
+  const requestDeleteSelected = () => {
     const count = selectedProductIds.size;
     if (count === 0) return;
-    if (confirm(`Yakin ingin menghapus ${count} produk terpilih dari database master?`)) {
-      const ids = Array.from(selectedProductIds);
-      onBatchDeleteMasterProducts(ids);
-      setSelectedProductIds(new Set());
-      setImportStatus({
-        success: true,
-        message: `Berhasil menghapus ${count} produk dari database.`,
-      });
-    }
+    const ids = Array.from(selectedProductIds);
+    setDeleteDialog({
+      isOpen: true,
+      mode: 'SELECTED',
+      productIds: ids,
+      title: `Hapus ${count} Produk Terpilih?`,
+      description: `Anda akan menghapus ${count} produk terpilih secara permanen dari database master dan Cloud Firestore. Tindakan ini tidak dapat dibatalkan.`,
+      badgeText: `${count} Produk Dipilih`,
+      confirmButtonText: `Ya, Hapus (${count}) Produk`,
+    });
   };
 
-  const handleClearAllData = (type?: ProcurementType) => {
-    let targetLabel = 'SELURUH data produk di database master';
+  const requestClearAllData = (type?: ProcurementType) => {
+    let targetLabel = 'SELURUH data master produk';
+    let mode: 'CLEAR_ALL' | 'CLEAR_CONSIGNMENT' | 'CLEAR_OUTRIGHT' = 'CLEAR_ALL';
     let idsToClear: string[] | undefined;
+    let count = masterProducts.length;
 
     if (type === 'CONSIGNMENT') {
       targetLabel = 'seluruh data produk CONSIGNMENT (Konsinyasi)';
+      mode = 'CLEAR_CONSIGNMENT';
       idsToClear = consignmentProducts.map((p) => p.id);
+      count = consignmentProducts.length;
     } else if (type === 'OUTRIGHT') {
       targetLabel = 'seluruh data produk OUTRIGHT (Beli Putus)';
+      mode = 'CLEAR_OUTRIGHT';
       idsToClear = outrightProducts.map((p) => p.id);
+      count = outrightProducts.length;
     }
 
-    if (
-      confirm(
-        `PERINGATAN: Anda akan MENGOSONGKAN ${targetLabel}. Tindakan ini tidak dapat dibatalkan. Lanjutkan?`
-      )
-    ) {
-      onClearAllMasterProducts(idsToClear);
-      setSelectedProductIds(new Set());
+    setDeleteDialog({
+      isOpen: true,
+      mode,
+      productIds: idsToClear,
+      title: `Kosongkan ${type ? (type === 'CONSIGNMENT' ? 'Produk Consignment' : 'Produk Outright') : 'Seluruh Database Master'}?`,
+      description: `PERINGATAN: Tindakan ini akan MENGOSONGKAN ${count} produk (${targetLabel}) secara permanen dari penyimpanan dan Cloud Firestore. Data yang dikosongkan tidak akan muncul kembali saat halaman dimuat ulang.`,
+      badgeText: `Total ${count} Produk Akan Dihapus`,
+      confirmButtonText: 'Ya, Kosongkan Sekarang',
+    });
+  };
+
+  const requestDeleteSingle = (p: MasterProduct) => {
+    setDeleteDialog({
+      isOpen: true,
+      mode: 'SINGLE',
+      singleProduct: p,
+      title: `Hapus Produk "${p.itemName}"?`,
+      description: `Produk dengan barcode ${p.barcode} dan SKU ${p.sku || '-'} dari suplier ${p.supplierName} akan dihapus secara permanen dari database master.`,
+      badgeText: p.barcode,
+      confirmButtonText: 'Ya, Hapus Produk Ini',
+    });
+  };
+
+  // Preview selected items in confirmation modal
+  const selectedItemsPreview = useMemo(() => {
+    if (!deleteDialog || deleteDialog.mode !== 'SELECTED' || !deleteDialog.productIds) return [];
+    const idSet = new Set(deleteDialog.productIds);
+    return masterProducts.filter((p) => idSet.has(p.id));
+  }, [deleteDialog, masterProducts]);
+
+  // Execute Deletion after User Confirms in Modal
+  const handleConfirmDelete = async () => {
+    if (!deleteDialog) return;
+    setIsDeletingLoading(true);
+
+    try {
+      if (deleteDialog.mode === 'SELECTED' && deleteDialog.productIds) {
+        const ids = deleteDialog.productIds;
+        await onBatchDeleteMasterProducts(ids);
+        setSelectedProductIds(new Set());
+        setImportStatus({
+          success: true,
+          message: `Berhasil menghapus ${ids.length} produk terpilih dari database master & Cloud Firestore.`,
+        });
+      } else if (deleteDialog.mode === 'SINGLE' && deleteDialog.singleProduct) {
+        const p = deleteDialog.singleProduct;
+        await onDeleteMasterProduct(p.id);
+        setSelectedProductIds((prev) => {
+          const next = new Set(prev);
+          next.delete(p.id);
+          return next;
+        });
+        setImportStatus({
+          success: true,
+          message: `Produk "${p.itemName}" (${p.barcode}) berhasil dihapus dari database.`,
+        });
+      } else if (
+        deleteDialog.mode === 'CLEAR_ALL' ||
+        deleteDialog.mode === 'CLEAR_CONSIGNMENT' ||
+        deleteDialog.mode === 'CLEAR_OUTRIGHT'
+      ) {
+        await onClearAllMasterProducts(deleteDialog.productIds);
+        setSelectedProductIds(new Set());
+        setImportStatus({
+          success: true,
+          message: `Berhasil mengosongkan ${
+            deleteDialog.mode === 'CLEAR_CONSIGNMENT'
+              ? 'seluruh data produk Consignment'
+              : deleteDialog.mode === 'CLEAR_OUTRIGHT'
+              ? 'seluruh data produk Outright'
+              : 'seluruh data database master produk'
+          }.`,
+        });
+      }
+    } catch (err: any) {
+      console.error('Error executing delete in database view:', err);
       setImportStatus({
-        success: true,
-        message: `Berhasil mengosongkan data ${type ? type : 'master produk'}.`,
+        success: false,
+        message: err?.message || 'Terjadi kesalahan saat menghapus data. Silakan coba kembali.',
       });
+    } finally {
+      setIsDeletingLoading(false);
+      setDeleteDialog(null);
     }
   };
 
@@ -941,7 +1034,7 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
             {selectedProductIds.size > 0 && (
               <button
                 type="button"
-                onClick={handleDeleteSelected}
+                onClick={requestDeleteSelected}
                 className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer shadow-xs animate-in fade-in"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -953,7 +1046,7 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
             <div className="flex items-center gap-1.5">
               <button
                 type="button"
-                onClick={() => handleClearAllData(selectedTypeFilter !== 'ALL' ? selectedTypeFilter : undefined)}
+                onClick={() => requestClearAllData(selectedTypeFilter !== 'ALL' ? selectedTypeFilter : undefined)}
                 className="px-3 py-1.5 bg-white hover:bg-rose-50 text-rose-700 hover:text-rose-800 border border-rose-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer"
                 title="Kosongkan data"
               >
@@ -1073,12 +1166,8 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
                             </button>
                             <button
                               type="button"
-                              onClick={() => {
-                                if (confirm(`Hapus produk "${p.itemName}" (${p.barcode})?`)) {
-                                  onDeleteMasterProduct(p.id);
-                                }
-                              }}
-                              className="p-1.5 rounded text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
+                              onClick={() => requestDeleteSingle(p)}
+                              className="p-1.5 rounded text-neutral-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
                               title="Hapus Produk"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
@@ -1106,6 +1195,137 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
           </div>
         </div>
       </div>
+
+      {/* ========================================================= */}
+      {/* IN-APP CONFIRMATION MODAL FOR DELETION & EMPTYING (NO BROWSER POPUPS) */}
+      {/* ========================================================= */}
+      {deleteDialog?.isOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-neutral-900/60 backdrop-blur-xs flex items-center justify-center p-4 animate-in fade-in duration-150"
+          onClick={() => {
+            if (!isDeletingLoading) setDeleteDialog(null);
+          }}
+        >
+          <div
+            className="bg-white rounded-2xl max-w-md w-full shadow-2xl border border-neutral-200 overflow-hidden animate-in zoom-in-95 duration-150"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal Header */}
+            <div className="bg-rose-50/80 border-b border-rose-100 p-5 flex items-start gap-3.5">
+              <div className="w-10 h-10 rounded-xl bg-rose-100 text-rose-600 flex items-center justify-center shrink-0">
+                <AlertTriangle className="w-5 h-5 text-rose-600" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <h3 className="font-bold text-base text-neutral-900 truncate">
+                  {deleteDialog.title}
+                </h3>
+                <span className="inline-block mt-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-rose-200/80 text-rose-800">
+                  {deleteDialog.badgeText}
+                </span>
+              </div>
+              <button
+                type="button"
+                disabled={isDeletingLoading}
+                onClick={() => setDeleteDialog(null)}
+                className="text-neutral-400 hover:text-neutral-600 p-1 rounded-lg hover:bg-neutral-100 transition-colors disabled:opacity-40 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="p-5 space-y-4">
+              <p className="text-xs text-neutral-600 leading-relaxed">
+                {deleteDialog.description}
+              </p>
+
+              {/* Preview if deleting selected items */}
+              {deleteDialog.mode === 'SELECTED' && selectedItemsPreview.length > 0 && (
+                <div className="space-y-1.5">
+                  <div className="text-[11px] font-semibold text-neutral-700 uppercase tracking-wide">
+                    Pratinjau Produk Yang Dipilih:
+                  </div>
+                  <div className="max-h-40 overflow-y-auto space-y-1.5 border border-neutral-200 rounded-xl p-2.5 bg-neutral-50/70 divide-y divide-neutral-200/60">
+                    {selectedItemsPreview.slice(0, 5).map((p) => (
+                      <div key={p.id} className="pt-1.5 first:pt-0 flex items-center justify-between text-xs gap-2">
+                        <div className="truncate flex-1">
+                          <span className="font-semibold text-neutral-900">{p.itemName}</span>
+                          <span className="text-[10px] font-mono text-neutral-500 ml-1.5">({p.barcode})</span>
+                        </div>
+                        <span
+                          className={`text-[9px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wide shrink-0 ${
+                            p.procurementType === 'CONSIGNMENT'
+                              ? 'bg-amber-100 text-amber-800'
+                              : 'bg-blue-100 text-blue-800'
+                          }`}
+                        >
+                          {p.procurementType === 'CONSIGNMENT' ? 'Konsinyasi' : 'Outright'}
+                        </span>
+                      </div>
+                    ))}
+                    {selectedItemsPreview.length > 5 && (
+                      <div className="text-[11px] text-neutral-500 pt-1 italic text-center">
+                        + {selectedItemsPreview.length - 5} produk lainnya
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Preview if deleting single item */}
+              {deleteDialog.mode === 'SINGLE' && deleteDialog.singleProduct && (
+                <div className="p-3 bg-neutral-50 border border-neutral-200 rounded-xl space-y-1 text-xs">
+                  <div className="font-bold text-neutral-900">{deleteDialog.singleProduct.itemName}</div>
+                  <div className="text-neutral-500 font-mono text-[11px]">
+                    Barcode: {deleteDialog.singleProduct.barcode} | SKU: {deleteDialog.singleProduct.sku || '-'}
+                  </div>
+                  <div className="text-neutral-500 text-[11px]">
+                    Suplier: {deleteDialog.singleProduct.supplierName}
+                  </div>
+                </div>
+              )}
+
+              {/* Notice */}
+              <div className="p-3 bg-neutral-100/90 rounded-xl text-[11px] text-neutral-600 flex items-start gap-2 border border-neutral-200">
+                <AlertCircle className="w-4 h-4 text-neutral-500 shrink-0 mt-0.5" />
+                <span>
+                  Perubahan akan langsung dihapus dari memori dan disinkronkan ke Cloud Firestore. Data tidak akan muncul kembali saat halaman dimuat ulang.
+                </span>
+              </div>
+            </div>
+
+            {/* Modal Actions */}
+            <div className="bg-neutral-50 px-5 py-3.5 border-t border-neutral-200 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                disabled={isDeletingLoading}
+                onClick={() => setDeleteDialog(null)}
+                className="px-4 py-2 bg-white hover:bg-neutral-100 border border-neutral-300 rounded-xl text-xs font-semibold text-neutral-700 transition-colors cursor-pointer disabled:opacity-40"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingLoading}
+                onClick={handleConfirmDelete}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 shadow-xs transition-all cursor-pointer disabled:opacity-50"
+              >
+                {isDeletingLoading ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Menghapus...</span>
+                  </>
+                ) : (
+                  <>
+                    <Trash2 className="w-3.5 h-3.5" />
+                    <span>{deleteDialog.confirmButtonText}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

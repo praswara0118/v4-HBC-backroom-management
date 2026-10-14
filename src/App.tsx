@@ -151,7 +151,16 @@ export default function App() {
   // Cloud & Local State
   const [items, setItems] = useState<ReturnItem[]>(INITIAL_RETURN_ITEMS);
   const [suppliers, setSuppliers] = useState<Supplier[]>(INITIAL_SUPPLIERS);
-  const [masterProducts, setMasterProducts] = useState<MasterProduct[]>(INITIAL_MASTER_PRODUCTS);
+  const [masterProducts, setMasterProducts] = useState<MasterProduct[]>(() => {
+    try {
+      const cached = localStorage.getItem(STORAGE_KEY_MASTER_PRODUCTS);
+      if (cached !== null) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return INITIAL_MASTER_PRODUCTS;
+  });
   const [storageLocations, setStorageLocations] = useState<StorageLocation[]>(INITIAL_STORAGE_LOCATIONS);
   const [isCloudConnected, setIsCloudConnected] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
@@ -535,8 +544,9 @@ export default function App() {
 
   // Handler: Batch Delete Master Products
   const handleBatchDeleteMasterProducts = async (productIds: string[]) => {
+    const idSet = new Set(productIds);
     setMasterProducts((prev) => {
-      const updated = prev.filter((p) => !productIds.includes(p.id));
+      const updated = prev.filter((p) => !idSet.has(p.id));
       try {
         localStorage.setItem(STORAGE_KEY_MASTER_PRODUCTS, JSON.stringify(updated));
       } catch {}
@@ -545,7 +555,7 @@ export default function App() {
 
     try {
       await batchDeleteMasterProductsFromFirestore(productIds);
-      showAlert(`✓ ${productIds.length} produk berhasil dihapus.`);
+      showAlert(`✓ ${productIds.length} produk berhasil dihapus secara permanen.`);
     } catch (err) {
       console.warn('Error batch deleting master products:', err);
     }
@@ -553,20 +563,23 @@ export default function App() {
 
   // Handler: Clear All Master Products
   const handleClearAllMasterProducts = async (idsToClear?: string[]) => {
-    let updated: MasterProduct[];
-    if (idsToClear && idsToClear.length > 0) {
-      updated = masterProducts.filter((p) => !idsToClear.includes(p.id));
-    } else {
-      updated = [];
-    }
-    setMasterProducts(updated);
-    try {
-      localStorage.setItem(STORAGE_KEY_MASTER_PRODUCTS, JSON.stringify(updated));
-    } catch {}
+    setMasterProducts((prev) => {
+      let updated: MasterProduct[];
+      if (idsToClear && idsToClear.length > 0) {
+        const clearSet = new Set(idsToClear);
+        updated = prev.filter((p) => !clearSet.has(p.id));
+      } else {
+        updated = [];
+      }
+      try {
+        localStorage.setItem(STORAGE_KEY_MASTER_PRODUCTS, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
 
     try {
       await clearAllMasterProductsFromFirestore(idsToClear);
-      showAlert('✓ Data produk berhasil dikosongkan.');
+      showAlert('✓ Data master produk berhasil dikosongkan.');
     } catch (err) {
       console.warn('Error clearing master products:', err);
     }

@@ -5,6 +5,7 @@ import {
   deleteDoc,
   onSnapshot,
   getDocs,
+  getDoc,
 } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { ReturnItem, Supplier, MasterProduct, StorageLocation } from '../types/inventory';
@@ -78,6 +79,21 @@ const STORAGE_LOCATIONS_COLLECTION = 'storageLocations';
  */
 export async function seedInitialFirestoreData(): Promise<void> {
   try {
+    // Check if initial seeding has already been completed in this environment
+    const hasSeededLocal = localStorage.getItem('returku_system_seeded') === 'true';
+    if (hasSeededLocal) {
+      return; // Data has already been seeded in the past; never re-populate over cleared/deleted databases!
+    }
+
+    const testRef = doc(db, 'systemMetadata', 'initial_seed');
+    try {
+      const testSnap = await getDoc(testRef);
+      if (testSnap.exists()) {
+        localStorage.setItem('returku_system_seeded', 'true');
+        return; // Seeded in Firestore already; respect user's deleted/emptied state
+      }
+    } catch {}
+
     const suppliersSnapshot = await getDocs(collection(db, SUPPLIERS_COLLECTION));
     if (suppliersSnapshot.empty) {
       for (const sup of INITIAL_SUPPLIERS) {
@@ -105,8 +121,18 @@ export async function seedInitialFirestoreData(): Promise<void> {
         await setDoc(doc(db, STORAGE_LOCATIONS_COLLECTION, loc.id), loc);
       }
     }
+
+    // Persist completion marker
+    try {
+      await setDoc(testRef, {
+        seededAt: new Date().toISOString(),
+        version: '1.0',
+      });
+    } catch {}
+    localStorage.setItem('returku_system_seeded', 'true');
   } catch (error) {
     console.warn('Initial seeding skipped or already seeded:', error);
+    localStorage.setItem('returku_system_seeded', 'true');
   }
 }
 
@@ -351,13 +377,39 @@ export async function deleteMasterProductFromFirestore(productId: string): Promi
  * Batch delete master products
  */
 export async function batchDeleteMasterProductsFromFirestore(productIds: string[]): Promise<void> {
-  for (const id of productIds) {
-    try {
-      const docRef = doc(db, MASTER_PRODUCTS_COLLECTION, id);
-      await deleteDoc(docRef);
-    } catch (err) {
-      console.warn('Error deleting master product:', id, err);
-    }
+  if (!productIds || productIds.length === 0) return;
+  const idsSet = new Set(productIds);
+
+  // 1. Direct delete by product id
+  await Promise.all(
+    productIds.map(async (id) => {
+      try {
+        const docRef = doc(db, MASTER_PRODUCTS_COLLECTION, id);
+        await deleteDoc(docRef);
+      } catch (err) {
+        console.warn('Error deleting master product by doc id:', id, err);
+      }
+    })
+  );
+
+  // 2. Extra safety: query documents in masterProducts and delete any whose id matches
+  try {
+    const snapshot = await getDocs(collection(db, MASTER_PRODUCTS_COLLECTION));
+    const toDeleteDocs = snapshot.docs.filter((d) => {
+      const data = d.data() as any;
+      return idsSet.has(d.id) || (data && data.id && idsSet.has(data.id));
+    });
+    await Promise.all(
+      toDeleteDocs.map(async (d) => {
+        try {
+          await deleteDoc(d.ref);
+        } catch (e) {
+          console.warn('Error removing matched doc:', d.id, e);
+        }
+      })
+    );
+  } catch (err) {
+    console.warn('Cleanup check error on batch delete:', err);
   }
 }
 
@@ -371,11 +423,14 @@ export async function clearAllMasterProductsFromFirestore(ids?: string[]): Promi
       return;
     }
     const snapshot = await getDocs(collection(db, MASTER_PRODUCTS_COLLECTION));
-    for (const d of snapshot.docs) {
-      await deleteDoc(d.ref);
+    const docs = snapshot.docs;
+    const batchSize = 50;
+    for (let i = 0; i < docs.length; i += batchSize) {
+      const chunk = docs.slice(i, i + batchSize);
+      await Promise.all(chunk.map((d) => deleteDoc(d.ref)));
     }
   } catch (error) {
-    console.warn('Error clearing master products:', error);
+    console.warn('Error clearing master products from Firestore:', error);
   }
 }
 
