@@ -1,0 +1,68 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Health check test connection
+    match /test/{testId} {
+      allow read: if true;
+    }
+
+    function isValidReturnItem(data) {
+      return data.barcode is string && data.barcode.size() <= 128
+        && data.itemName is string && data.itemName.size() <= 256
+        && data.quantity is number && data.quantity >= 0;
+    }
+
+    function isValidSupplier(data) {
+      return data.name is string && data.name.size() <= 256;
+    }
+
+    function isValidMasterProduct(data) {
+      return data.barcode is string && data.barcode.size() <= 128
+        && data.itemName is string && data.itemName.size() <= 256;
+    }
+
+    function isValidStorageLocation(data) {
+      return data.barcode is string && data.barcode.size() <= 128
+        && data.itemName is string && data.itemName.size() <= 256
+        && data.storageZone is string && data.storageZone.size() <= 256;
+    }
+
+    // Return items collection for warehouse operations
+    match /returnItems/{itemId} {
+      allow read: if true;
+      allow create: if isValidReturnItem(request.resource.data);
+      allow update: if isValidReturnItem(request.resource.data);
+      allow delete: if true;
+    }
+
+    // Master products database from XLSX/manual input
+    match /masterProducts/{productId} {
+      allow read: if true;
+      allow create: if isValidMasterProduct(request.resource.data);
+      allow update: if isValidMasterProduct(request.resource.data);
+      allow delete: if true;
+    }
+
+    // Storage locations database (separate from return items)
+    match /storageLocations/{locationId} {
+      allow read: if true;
+      allow create: if isValidStorageLocation(request.resource.data);
+      allow update: if isValidStorageLocation(request.resource.data);
+      allow delete: if true;
+    }
+
+    // Suppliers collection for warehouse operations
+    match /suppliers/{supplierId} {
+      allow read: if true;
+      allow create: if isValidSupplier(request.resource.data);
+      allow update: if isValidSupplier(request.resource.data);
+      allow delete: if true;
+    }
+  }
+}

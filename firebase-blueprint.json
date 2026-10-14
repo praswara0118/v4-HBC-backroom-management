@@ -1,0 +1,351 @@
+{
+  "entities": {
+    "returnItem": {
+      "title": "ReturnItem",
+      "description": "Barang return masuk di gudang dengan barcode dan pelacakan tenggat waktu",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identifier unik dokumen barang return",
+          "maxLength": 128
+        },
+        "barcode": {
+          "type": "string",
+          "description": "Kode barcode / SKU barang untuk scan",
+          "maxLength": 128
+        },
+        "itemName": {
+          "type": "string",
+          "description": "Nama produk atau barang yang diretur",
+          "maxLength": 256
+        },
+        "sku": {
+          "type": "string",
+          "description": "SKU atau kode stok barang",
+          "maxLength": 128
+        },
+        "supplierId": {
+          "type": "string",
+          "description": "ID referensi supplier pemilik barang",
+          "maxLength": 128
+        },
+        "supplierName": {
+          "type": "string",
+          "description": "Nama PT/CV supplier",
+          "maxLength": 256
+        },
+        "supplierPic": {
+          "type": "string",
+          "description": "Nama PIC / kontak supplier",
+          "maxLength": 128
+        },
+        "supplierPhone": {
+          "type": "string",
+          "description": "Nomor WhatsApp supplier untuk notifikasi warning",
+          "maxLength": 64
+        },
+        "supplierEmail": {
+          "type": "string",
+          "description": "Email / Gmail supplier untuk notifikasi",
+          "maxLength": 128
+        },
+        "quantity": {
+          "type": "number",
+          "description": "Jumlah fisik barang return"
+        },
+        "unit": {
+          "type": "string",
+          "description": "Satuan unit (Pcs, Karton, Dus, dll)",
+          "maxLength": 32
+        },
+        "category": {
+          "type": "string",
+          "description": "Kategori produk",
+          "maxLength": 64
+        },
+        "returnReason": {
+          "type": "string",
+          "description": "Alasan pengembalian barang",
+          "maxLength": 128
+        },
+        "conditionNotes": {
+          "type": "string",
+          "description": "Catatan kerusakan fisik barang",
+          "maxLength": 1000
+        },
+        "receivedDate": {
+          "type": "string",
+          "description": "Tanggal barang masuk ke gudang (YYYY-MM-DD)",
+          "maxLength": 32
+        },
+        "dueDate": {
+          "type": "string",
+          "description": "Tenggat waktu batas akhir penjemputan barang (YYYY-MM-DD)",
+          "maxLength": 32
+        },
+        "status": {
+          "type": "string",
+          "description": "Status proses retur",
+          "enum": [
+            "Menunggu Pengambilan",
+            "Mendekati Tenggat",
+            "Lewat Tenggat",
+            "Sudah Diambil",
+            "Diganti Baru"
+          ]
+        },
+        "locationSlot": {
+          "type": "string",
+          "description": "Lokasi rak simpan gudang",
+          "maxLength": 64
+        },
+        "estimatedValue": {
+          "type": "number",
+          "description": "Estimasi nilai barang dalam rupiah"
+        },
+        "pickedUpDate": {
+          "type": "string",
+          "description": "Tanggal serah terima barang diambil",
+          "maxLength": 32
+        },
+        "pickedUpBy": {
+          "type": "string",
+          "description": "Pihak/driver yang mengambil barang",
+          "maxLength": 256
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "URL atau Base64 foto fisik barang retur (opsional)",
+          "maxLength": 500000
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Waktu pembuatan data ISO"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Waktu perubahan terakhir ISO"
+        }
+      },
+      "required": ["barcode", "itemName", "supplierId", "supplierName", "quantity", "unit", "returnReason", "dueDate", "status"]
+    },
+    "masterProduct": {
+      "title": "MasterProduct",
+      "description": "Database master produk yang diimpor dari file XLSX",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identifier unik produk",
+          "maxLength": 128
+        },
+        "barcode": {
+          "type": "string",
+          "description": "Kode barcode produk",
+          "maxLength": 128
+        },
+        "itemName": {
+          "type": "string",
+          "description": "Nama produk",
+          "maxLength": 256
+        },
+        "department": {
+          "type": "string",
+          "description": "Departemen atau kategori produk",
+          "maxLength": 128
+        },
+        "sku": {
+          "type": "string",
+          "description": "Nomor SKU produk",
+          "maxLength": 128
+        },
+        "supplierName": {
+          "type": "string",
+          "description": "Nama supplier pemilik produk",
+          "maxLength": 256
+        },
+        "supplierPhone": {
+          "type": "string",
+          "description": "Nomor WhatsApp supplier",
+          "maxLength": 64
+        },
+        "supplierEmail": {
+          "type": "string",
+          "description": "Gmail supplier",
+          "maxLength": 128
+        },
+        "unit": {
+          "type": "string",
+          "description": "Satuan barang",
+          "maxLength": 32
+        },
+        "procurementType": {
+          "type": "string",
+          "description": "Kriteria produk: OUTRIGHT (Beli Putus) atau CONSIGNMENT (Konsinyasi)",
+          "maxLength": 32
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Waktu perbaruan terakhir"
+        }
+      },
+      "required": ["barcode", "itemName", "department", "sku", "supplierName"]
+    },
+    "storageLocation": {
+      "title": "StorageLocation",
+      "description": "Data tempat penyimpanan barang di gudang atau rak toko beserta foto rak",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identifier unik lokasi barang",
+          "maxLength": 128
+        },
+        "barcode": {
+          "type": "string",
+          "description": "Kode barcode barang",
+          "maxLength": 128
+        },
+        "sku": {
+          "type": "string",
+          "description": "Nomor SKU barang",
+          "maxLength": 128
+        },
+        "itemName": {
+          "type": "string",
+          "description": "Nama barang",
+          "maxLength": 256
+        },
+        "department": {
+          "type": "string",
+          "description": "Departemen / Kategori",
+          "maxLength": 128
+        },
+        "supplierName": {
+          "type": "string",
+          "description": "Nama supplier",
+          "maxLength": 256
+        },
+        "procurementType": {
+          "type": "string",
+          "description": "Kriteria barang (OUTRIGHT atau CONSIGNMENT)",
+          "maxLength": 32
+        },
+        "storageZone": {
+          "type": "string",
+          "description": "Zona atau area penyimpanan (Gudang Utama, Toko Area Depan, Chiller, dsb)",
+          "maxLength": 128
+        },
+        "aisleRack": {
+          "type": "string",
+          "description": "Baris / Aisle dan Nomor Rak (e.g. Aisle 3 - Rak B4)",
+          "maxLength": 128
+        },
+        "shelfLevel": {
+          "type": "string",
+          "description": "Tingkat rak / level posisi barang",
+          "maxLength": 64
+        },
+        "notes": {
+          "type": "string",
+          "description": "Catatan petunjuk penataan atau penyimpanan",
+          "maxLength": 500
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Foto tempat penyimpanan barang / rak",
+          "maxLength": 500000
+        },
+        "updatedBy": {
+          "type": "string",
+          "description": "Nama staff / PIC yang mencatat lokasi",
+          "maxLength": 128
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Waktu pembuatan data ISO"
+        },
+        "updatedAt": {
+          "type": "string",
+          "description": "Waktu perbaruan terakhir ISO"
+        }
+      },
+      "required": ["barcode", "itemName", "storageZone", "aisleRack"]
+    },
+    "supplier": {
+      "title": "Supplier",
+      "description": "Data master supplier rekanan",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Identifier unik supplier",
+          "maxLength": 128
+        },
+        "code": {
+          "type": "string",
+          "description": "Kode supplier",
+          "maxLength": 64
+        },
+        "name": {
+          "type": "string",
+          "description": "Nama supplier",
+          "maxLength": 256
+        },
+        "picName": {
+          "type": "string",
+          "description": "Nama PIC rekanan",
+          "maxLength": 128
+        },
+        "phone": {
+          "type": "string",
+          "description": "Nomor WhatsApp",
+          "maxLength": 64
+        },
+        "email": {
+          "type": "string",
+          "description": "Email / Gmail",
+          "maxLength": 128
+        },
+        "address": {
+          "type": "string",
+          "description": "Alamat supplier",
+          "maxLength": 512
+        },
+        "defaultDueDays": {
+          "type": "number",
+          "description": "Standar tenggat hari pengambilan"
+        },
+        "notes": {
+          "type": "string",
+          "description": "Catatan khusus supplier",
+          "maxLength": 500
+        },
+        "createdAt": {
+          "type": "string",
+          "description": "Waktu pendaftaran ISO"
+        }
+      },
+      "required": ["code", "name"]
+    }
+  },
+  "firestore": {
+    "/returnItems/{itemId}": {
+      "schema": "returnItem",
+      "description": "Koleksi data barang return yang masuk ke gudang"
+    },
+    "/masterProducts/{productId}": {
+      "schema": "masterProduct",
+      "description": "Database master produk yang diimpor dari format XLSX"
+    },
+    "/storageLocations/{locationId}": {
+      "schema": "storageLocation",
+      "description": "Database lokasi tempat penyimpanan barang dan foto rak"
+    },
+    "/suppliers/{supplierId}": {
+      "schema": "supplier",
+      "description": "Koleksi master data supplier rekanan gudang"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "HBC Return © 2026 - AEON Health & Beauty",
+  "description": "Aplikasi pendataan barang return masuk dikategorikan per-supplier, pelacakan tenggat waktu pengambilan, barcode scanner instan, dan pengiriman notifikasi warning via WhatsApp & Gmail.",
+  "requestFramePermissions": [
+    "camera"
+  ],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
