@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="aeonRingGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#f472b6" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#fbcfe8" stop-opacity="0.8" />
+    </linearGradient>
+    <filter id="badgeShadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="6" stdDeviation="8" flood-color="#000000" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Official AEON Health & Beauty Vivid Magenta Background (#b8126f) -->
+  <rect width="512" height="512" rx="100" fill="#b8126f" />
+
+  <!-- AEON Ring / Elliptical Halo Behind/Through Letters -->
+  <ellipse cx="218" cy="235" rx="88" ry="24" fill="none" stroke="url(#aeonRingGrad)" stroke-width="14" transform="rotate(-3 218 235)" opacity="0.9" />
+
+  <!-- AEON Wordmark -->
+  <!-- Letter A stroke -->
+  <path d="M 40 286 L 140 162 L 158 162 L 158 286 L 138 286 L 138 266 L 58 266 L 40 286 Z M 76 248 L 138 248 L 138 186 Z" fill="#ffffff" />
+  
+  <!-- Letter E connected to A -->
+  <path d="M 158 162 L 236 162 L 236 182 L 178 182 L 178 214 L 228 214 L 228 234 L 178 234 L 178 266 L 238 266 L 238 286 L 158 286 Z" fill="#ffffff" />
+
+  <!-- Elliptical Ring Front Segment Overlap for 3D Interlocking Effect -->
+  <path d="M 130 238 A 88 24 0 0 0 290 238" fill="none" stroke="url(#aeonRingGrad)" stroke-width="14" opacity="0.95" />
+
+  <!-- Letter O (Circle with angled inner ellipse) -->
+  <path d="M 300 224 C 300 188 274 160 240 160 C 206 160 180 188 180 224 C 180 260 206 288 240 288 C 274 288 300 260 300 224 Z M 214 224 C 214 200 226 180 240 180 C 254 180 266 200 266 224 C 266 248 254 268 240 268 C 226 268 214 248 214 224 Z" fill="#ffffff" />
+
+  <!-- Letter N -->
+  <path d="M 384 162 L 404 162 L 404 286 L 384 286 L 332 206 L 332 286 L 312 286 L 312 162 L 334 162 L 384 242 Z" fill="#ffffff" />
+
+  <!-- Subtitle: HEALTH & BEAUTY (Serif Style) -->
+  <text x="256" y="342" font-family="'Times New Roman', Times, Georgia, serif" font-size="34" font-weight="700" fill="#ffffff" text-anchor="middle" letter-spacing="4">HEALTH &amp; BEAUTY</text>
+
+  <!-- Bottom Brand Ribbon Badge: HBC RETURN (with Return Indicator) -->
+  <g transform="translate(76, 400)">
+    <rect width="360" height="64" rx="32" fill="#ffffff" filter="url(#badgeShadow)"/>
+    
+    <!-- Small Magenta Return Arrow Icon -->
+    <circle cx="44" cy="32" r="20" fill="#b8126f" />
+    <path d="M 38 28 A 8 8 0 1 1 36 38" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round"/>
+    <polygon points="34,24 44,26 40,34" fill="#ffffff"/>
+
+    <!-- HBC RETURN Text -->
+    <text x="206" y="44" font-family="'Plus Jakarta Sans', system-ui, -apple-system, sans-serif" font-size="24" font-weight="900" fill="#b8126f" text-anchor="middle" letter-spacing="3">HBC RETURN</text>
+  </g>
+</svg>
