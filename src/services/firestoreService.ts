@@ -11,6 +11,7 @@ import {
   limit,
   orderBy,
   getCountFromServer,
+  writeBatch,
 } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { ReturnItem, Supplier, MasterProduct, StorageLocation } from '../types/inventory';
@@ -84,47 +85,63 @@ const STORAGE_LOCATIONS_COLLECTION = 'storageLocations';
  */
 export async function seedInitialFirestoreData(): Promise<void> {
   try {
-    // Check if initial seeding has already been completed in this environment
+    // 1. Fast local check (0 Firestore operations)
     const hasSeededLocal = localStorage.getItem('returku_system_seeded') === 'true';
     if (hasSeededLocal) {
-      return; // Data has already been seeded in the past; never re-populate over cleared/deleted databases!
+      return;
     }
 
+    // 2. Check metadata document (costs at most 1 read)
     const testRef = doc(db, 'systemMetadata', 'initial_seed');
     try {
       const testSnap = await getDoc(testRef);
       if (testSnap.exists()) {
         localStorage.setItem('returku_system_seeded', 'true');
-        return; // Seeded in Firestore already; respect user's deleted/emptied state
+        return;
       }
     } catch {}
 
-    const suppliersSnapshot = await getDocs(collection(db, SUPPLIERS_COLLECTION));
+    // 3. Check each collection with limit(1) (costs at most 1 read each, instead of reading thousands of docs!)
+    const [suppliersSnapshot, itemsSnapshot, masterSnapshot, storageSnapshot] = await Promise.all([
+      getDocs(query(collection(db, SUPPLIERS_COLLECTION), limit(1))),
+      getDocs(query(collection(db, ITEMS_COLLECTION), limit(1))),
+      getDocs(query(collection(db, MASTER_PRODUCTS_COLLECTION), limit(1))),
+      getDocs(query(collection(db, STORAGE_LOCATIONS_COLLECTION), limit(1))),
+    ]);
+
+    const batch = writeBatch(db);
+    let hasWrites = false;
+
     if (suppliersSnapshot.empty) {
       for (const sup of INITIAL_SUPPLIERS) {
-        await setDoc(doc(db, SUPPLIERS_COLLECTION, sup.id), sup);
+        batch.set(doc(db, SUPPLIERS_COLLECTION, sup.id), sanitizeDataForFirestore(sup));
+        hasWrites = true;
       }
     }
 
-    const itemsSnapshot = await getDocs(collection(db, ITEMS_COLLECTION));
     if (itemsSnapshot.empty) {
       for (const item of INITIAL_RETURN_ITEMS) {
-        await setDoc(doc(db, ITEMS_COLLECTION, item.id), item);
+        batch.set(doc(db, ITEMS_COLLECTION, item.id), sanitizeDataForFirestore(item));
+        hasWrites = true;
       }
     }
 
-    const masterSnapshot = await getDocs(collection(db, MASTER_PRODUCTS_COLLECTION));
     if (masterSnapshot.empty) {
       for (const prod of INITIAL_MASTER_PRODUCTS) {
-        await setDoc(doc(db, MASTER_PRODUCTS_COLLECTION, prod.id), prod);
+        batch.set(doc(db, MASTER_PRODUCTS_COLLECTION, prod.id), sanitizeDataForFirestore(prod));
+        hasWrites = true;
       }
     }
 
-    const storageSnapshot = await getDocs(collection(db, STORAGE_LOCATIONS_COLLECTION));
     if (storageSnapshot.empty) {
       for (const loc of INITIAL_STORAGE_LOCATIONS) {
-        await setDoc(doc(db, STORAGE_LOCATIONS_COLLECTION, loc.id), loc);
+        batch.set(doc(db, STORAGE_LOCATIONS_COLLECTION, loc.id), sanitizeDataForFirestore(loc));
+        hasWrites = true;
       }
+    }
+
+    if (hasWrites) {
+      await batch.commit();
     }
 
     // Persist completion marker
@@ -596,6 +613,26 @@ export async function deleteReturnItemFromFirestore(itemId: string): Promise<voi
 }
 
 /**
+ * Batch delete return items using writeBatch in chunks of 450
+ */
+export async function batchDeleteReturnItemsFromFirestore(itemIds: string[]): Promise<void> {
+  if (!itemIds || itemIds.length === 0) return;
+  const CHUNK_SIZE = 450;
+  for (let i = 0; i < itemIds.length; i += CHUNK_SIZE) {
+    const chunk = itemIds.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+    for (const id of chunk) {
+      batch.delete(doc(db, ITEMS_COLLECTION, id));
+    }
+    try {
+      await batch.commit();
+    } catch (err) {
+      console.warn('Error committing batch delete for return items:', err);
+    }
+  }
+}
+
+/**
  * Save or update a supplier
  */
 export async function saveSupplierToFirestore(supplier: Supplier): Promise<void> {
@@ -621,6 +658,26 @@ export async function deleteSupplierFromFirestore(supplierId: string): Promise<v
 }
 
 /**
+ * Batch delete suppliers using writeBatch in chunks of 450
+ */
+export async function batchDeleteSuppliersFromFirestore(supplierIds: string[]): Promise<void> {
+  if (!supplierIds || supplierIds.length === 0) return;
+  const CHUNK_SIZE = 450;
+  for (let i = 0; i < supplierIds.length; i += CHUNK_SIZE) {
+    const chunk = supplierIds.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+    for (const id of chunk) {
+      batch.delete(doc(db, SUPPLIERS_COLLECTION, id));
+    }
+    try {
+      await batch.commit();
+    } catch (err) {
+      console.warn('Error committing batch delete for suppliers:', err);
+    }
+  }
+}
+
+/**
  * Save or update a master product
  */
 export async function saveMasterProductToFirestore(product: MasterProduct): Promise<void> {
@@ -635,19 +692,58 @@ export async function saveMasterProductToFirestore(product: MasterProduct): Prom
 }
 
 /**
- * Bulk save master products from imported Excel / XLSX
+ * Bulk save master products from imported Excel / XLSX using Firestore writeBatch (chunks of 450)
+ * Menghindari 1.000+ sequential HTTP requests dan menghemat koneksi jaringan.
  */
-export async function batchSaveMasterProductsToFirestore(products: MasterProduct[]): Promise<void> {
-  for (const product of products) {
+export async function batchSaveMasterProductsToFirestore(
+  products: MasterProduct[],
+  onProgress?: (savedCount: number, totalCount: number) => void
+): Promise<{ successCount: number; failCount: number }> {
+  if (!products || products.length === 0) return { successCount: 0, failCount: 0 };
+
+  const CHUNK_SIZE = 450;
+  let successCount = 0;
+  let failCount = 0;
+
+  for (let i = 0; i < products.length; i += CHUNK_SIZE) {
+    const chunk = products.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+
+    for (const product of chunk) {
+      try {
+        const docRef = doc(db, MASTER_PRODUCTS_COLLECTION, product.id);
+        const payload = sanitizeDataForFirestore(product);
+        batch.set(docRef, payload, { merge: true });
+      } catch (err) {
+        console.warn('Error queuing product in batch:', product.barcode, err);
+        failCount++;
+      }
+    }
+
     try {
-      const docRef = doc(db, MASTER_PRODUCTS_COLLECTION, product.id);
-      const payload = sanitizeDataForFirestore(product);
-      await setDoc(docRef, payload, { merge: true });
+      await batch.commit();
+      successCount += chunk.length;
+      if (onProgress) {
+        onProgress(successCount, products.length);
+      }
     } catch (err) {
-      console.warn('Error saving product in batch:', product.barcode, err);
+      console.warn('Batch commit failed for chunk, executing individual fallback:', err);
+      // Fallback per-doc jika batch gagal
+      for (const product of chunk) {
+        try {
+          const docRef = doc(db, MASTER_PRODUCTS_COLLECTION, product.id);
+          const payload = sanitizeDataForFirestore(product);
+          await setDoc(docRef, payload, { merge: true });
+          successCount++;
+        } catch {
+          failCount++;
+        }
+      }
     }
   }
+
   invalidateMasterProductCache();
+  return { successCount, failCount };
 }
 
 /**
@@ -664,43 +760,29 @@ export async function deleteMasterProductFromFirestore(productId: string): Promi
 }
 
 /**
- * Batch delete master products
+ * Batch delete master products directly using writeBatch without downloading the entire collection
+ * (MENGHEMAT 14.000+ READS YANG SEBELUMNYA TERJADI SAAT MENGHAPUS PRODUK)
  */
 export async function batchDeleteMasterProductsFromFirestore(productIds: string[]): Promise<void> {
   if (!productIds || productIds.length === 0) return;
-  const idsSet = new Set(productIds);
 
-  // 1. Direct delete by product id
-  await Promise.all(
-    productIds.map(async (id) => {
-      try {
-        const docRef = doc(db, MASTER_PRODUCTS_COLLECTION, id);
-        await deleteDoc(docRef);
-      } catch (err) {
-        console.warn('Error deleting master product by doc id:', id, err);
-      }
-    })
-  );
+  const CHUNK_SIZE = 450;
+  for (let i = 0; i < productIds.length; i += CHUNK_SIZE) {
+    const chunk = productIds.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
 
-  // 2. Extra safety: query documents in masterProducts and delete any whose id matches
-  try {
-    const snapshot = await getDocs(collection(db, MASTER_PRODUCTS_COLLECTION));
-    const toDeleteDocs = snapshot.docs.filter((d) => {
-      const data = d.data() as any;
-      return idsSet.has(d.id) || (data && data.id && idsSet.has(data.id));
-    });
-    await Promise.all(
-      toDeleteDocs.map(async (d) => {
-        try {
-          await deleteDoc(d.ref);
-        } catch (e) {
-          console.warn('Error removing matched doc:', d.id, e);
-        }
-      })
-    );
-  } catch (err) {
-    console.warn('Cleanup check error on batch delete:', err);
+    for (const id of chunk) {
+      const docRef = doc(db, MASTER_PRODUCTS_COLLECTION, id);
+      batch.delete(docRef);
+    }
+
+    try {
+      await batch.commit();
+    } catch (err) {
+      console.warn('Error committing delete batch:', err);
+    }
   }
+
   invalidateMasterProductCache();
 }
 
@@ -716,10 +798,14 @@ export async function clearAllMasterProductsFromFirestore(ids?: string[]): Promi
     }
     const snapshot = await getDocs(collection(db, MASTER_PRODUCTS_COLLECTION));
     const docs = snapshot.docs;
-    const batchSize = 50;
-    for (let i = 0; i < docs.length; i += batchSize) {
-      const chunk = docs.slice(i, i + batchSize);
-      await Promise.all(chunk.map((d) => deleteDoc(d.ref)));
+    const CHUNK_SIZE = 450;
+    for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
+      const chunk = docs.slice(i, i + CHUNK_SIZE);
+      const batch = writeBatch(db);
+      for (const d of chunk) {
+        batch.delete(d.ref);
+      }
+      await batch.commit();
     }
     invalidateMasterProductCache();
   } catch (error) {
@@ -742,18 +828,28 @@ export async function saveStorageLocationToFirestore(location: StorageLocation):
 }
 
 /**
- * Bulk save storage locations
+ * Bulk save storage locations using writeBatch in chunks
  */
 export async function batchSaveStorageLocationsToFirestore(locations: StorageLocation[]): Promise<void> {
-  for (const loc of locations) {
-    try {
+  if (!locations || locations.length === 0) return;
+
+  const CHUNK_SIZE = 450;
+  for (let i = 0; i < locations.length; i += CHUNK_SIZE) {
+    const chunk = locations.slice(i, i + CHUNK_SIZE);
+    const batch = writeBatch(db);
+
+    for (const loc of chunk) {
       const docRef = doc(db, STORAGE_LOCATIONS_COLLECTION, loc.id);
-      const payload = sanitizeDataForFirestore(loc);
-      await setDoc(docRef, payload, { merge: true });
+      batch.set(docRef, sanitizeDataForFirestore(loc), { merge: true });
+    }
+
+    try {
+      await batch.commit();
     } catch (err) {
-      console.warn('Error saving storage location in batch:', loc.barcode, err);
+      console.warn('Error committing storage location batch:', err);
     }
   }
+
   invalidateStorageLocationCache();
 }
 

@@ -7,7 +7,6 @@ import {
   MasterProduct,
   StorageLocation,
   AppNavigationMode,
-  DeviceViewMode,
 } from './types/inventory';
 import {
   INITIAL_SUPPLIERS,
@@ -26,7 +25,6 @@ import { PrintSlipModal } from './components/PrintSlipModal';
 import { MasterProductModal } from './components/MasterProductModal';
 import { StorageLocationView } from './components/StorageLocationView';
 import { DatabaseManagementView } from './components/DatabaseManagementView';
-import { DeviceModeSelector } from './components/DeviceModeSelector';
 import { exportAllToExcel } from './utils/excelService';
 import {
   subscribeToReturnItems,
@@ -35,8 +33,10 @@ import {
   subscribeToStorageLocations,
   saveReturnItemToFirestore,
   deleteReturnItemFromFirestore,
+  batchDeleteReturnItemsFromFirestore,
   saveSupplierToFirestore,
   deleteSupplierFromFirestore,
+  batchDeleteSuppliersFromFirestore,
   saveMasterProductToFirestore,
   batchSaveMasterProductsToFirestore,
   deleteMasterProductFromFirestore,
@@ -61,6 +61,7 @@ import {
   Download,
   Upload,
   RotateCcw,
+  Trash2,
   Eye,
   SlidersHorizontal,
   Package,
@@ -113,40 +114,31 @@ const deduplicateItems = (list: ReturnItem[]): ReturnItem[] => {
 };
 
 export default function App() {
-  // Pilihan Tampilan Layar (Responsif Auto, Mobile, Tablet, Desktop) — DEFAULT IS AUTO (RESPONSIF)!
-  const [deviceMode, setDeviceMode] = useState<DeviceViewMode>(() => {
+  // Mode tampilan: default Smartphone (false), dapat diaktifkan ke Mode Desktop (true)
+  const [isDesktopMode, setIsDesktopMode] = useState<boolean>(() => {
     try {
-      const saved = localStorage.getItem('returku_device_mode');
-      if (saved === 'mobile' || saved === 'tablet' || saved === 'desktop' || saved === 'auto') {
-        return saved as DeviceViewMode;
-      }
+      const saved = localStorage.getItem('returku_is_desktop_mode');
+      return saved === 'true';
     } catch {}
-    return 'auto'; // Default tampilan adalah responsif mengikuti device yang digunakan
+    return false; // DEFAULT ADALAH SMARTPHONE (HP)
   });
+
+  const toggleDesktopMode = () => {
+    setIsDesktopMode((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem('returku_is_desktop_mode', next ? 'true' : 'false');
+      } catch {}
+      if (!next) {
+        setViewMode('cards');
+      }
+      showAlert(next ? '🖥️ Beralih ke Mode Desktop' : '📱 Beralih ke Mode Smartphone (Default)');
+      return next;
+    });
+  };
 
   // Navigation mode: 'RETURN' (Fungsi 1: Manajemen Retur) | 'STORAGE' (Fungsi 2: Cek & Lokasi Simpan) | 'DATABASE' (Fungsi 3: Database & Impor)
   const [activeAppMode, setActiveAppMode] = useState<AppNavigationMode>('RETURN');
-
-  const handleSetDeviceMode = (mode: DeviceViewMode) => {
-    setDeviceMode(mode);
-    try {
-      localStorage.setItem('returku_device_mode', mode);
-    } catch {}
-    if (mode === 'mobile') {
-      setViewMode('cards');
-    }
-    showAlert(
-      `Beralih ke tampilan: ${
-        mode === 'auto'
-          ? '↔️ Responsif (Otomatis Sesuai Layar Perangkat) — Default'
-          : mode === 'mobile'
-          ? '📱 Mobile (HP)'
-          : mode === 'tablet'
-          ? '📟 Tablet (iPad / Terminal)'
-          : '💻 Desktop (Komputer)'
-      }`
-    );
-  };
 
   // Cloud & Local State
   const [items, setItems] = useState<ReturnItem[]>(INITIAL_RETURN_ITEMS);
@@ -283,7 +275,12 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedSupplierFilter, setSelectedSupplierFilter] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<FilterStatus>('ALL');
-  const [viewMode, setViewMode] = useState<'table' | 'cards'>('table');
+  const [viewMode, setViewMode] = useState<'table' | 'cards'>('cards');
+
+  // Custom Select / Multi-Select for Return Items Deletion
+  const [selectedReturnItemIds, setSelectedReturnItemIds] = useState<Set<string>>(new Set());
+  const [showBatchDeleteReturnModal, setShowBatchDeleteReturnModal] = useState(false);
+  const [isDeletingReturnItems, setIsDeletingReturnItems] = useState(false);
 
   // Modals state
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -718,9 +715,90 @@ export default function App() {
     try {
       await deleteReturnItemFromFirestore(itemId);
       setItems((prev) => prev.filter((i) => i.id !== itemId));
+      setSelectedReturnItemIds((prev) => {
+        const next = new Set(prev);
+        next.delete(itemId);
+        return next;
+      });
       showAlert('Barang return berhasil dihapus dari Cloud.');
     } catch (err) {
       console.error(err);
+    }
+  };
+
+  // Toggle selection for a single return item
+  const handleToggleSelectReturnItem = (itemId: string) => {
+    setSelectedReturnItemIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(itemId)) {
+        next.delete(itemId);
+      } else {
+        next.add(itemId);
+      }
+      return next;
+    });
+  };
+
+  // Toggle select all filtered return items
+  const handleToggleSelectAllReturnItems = () => {
+    if (selectedReturnItemIds.size === uniqueFilteredItems.length && uniqueFilteredItems.length > 0) {
+      setSelectedReturnItemIds(new Set());
+    } else {
+      const allIds = new Set<string>();
+      uniqueFilteredItems.forEach((item) => allIds.add(item.id));
+      setSelectedReturnItemIds(allIds);
+    }
+  };
+
+  // Execute batch delete for selected return items
+  const handleExecuteBatchDeleteReturnItems = async () => {
+    if (selectedReturnItemIds.size === 0) return;
+    const idsToDelete = Array.from(selectedReturnItemIds);
+    const count = idsToDelete.length;
+    setIsDeletingReturnItems(true);
+
+    try {
+      setItems((prev) => {
+        const idSet = new Set(idsToDelete);
+        const updated = prev.filter((i) => !idSet.has(i.id));
+        try {
+          localStorage.setItem(STORAGE_KEY_ITEMS, JSON.stringify(updated));
+        } catch {}
+        return updated;
+      });
+
+      await batchDeleteReturnItemsFromFirestore(idsToDelete);
+      setSelectedReturnItemIds(new Set());
+      setShowBatchDeleteReturnModal(false);
+      showAlert(`✓ Berhasil menghapus ${count} barang return terpilih secara permanen.`);
+    } catch (err) {
+      console.error('Error batch deleting return items:', err);
+      showAlert(`Terjadi kesalahan saat menghapus ${count} barang return.`);
+    } finally {
+      setIsDeletingReturnItems(false);
+    }
+  };
+
+  // Handler: Batch Delete Suppliers from SupplierListModal
+  const handleBatchDeleteSuppliers = async (supplierIds: string[]) => {
+    if (!supplierIds || supplierIds.length === 0) return;
+    const count = supplierIds.length;
+    const idSet = new Set(supplierIds);
+
+    setSuppliers((prev) => {
+      const updated = prev.filter((s) => !idSet.has(s.id));
+      try {
+        localStorage.setItem(STORAGE_KEY_SUPPLIERS, JSON.stringify(updated));
+      } catch {}
+      return updated;
+    });
+
+    try {
+      await batchDeleteSuppliersFromFirestore(supplierIds);
+      showAlert(`✓ Berhasil menghapus ${count} data supplier terpilih dari Cloud.`);
+    } catch (err) {
+      console.error(err);
+      showAlert(`Dihapus ${count} supplier dari perangkat.`);
     }
   };
 
@@ -844,15 +922,7 @@ export default function App() {
   };
 
   return (
-    <div
-      className={`min-h-screen text-neutral-900 font-sans flex flex-col transition-all duration-300 ${
-        deviceMode === 'mobile'
-          ? 'bg-slate-900/95 py-0 sm:py-6 sm:px-4 items-center justify-start'
-          : deviceMode === 'tablet'
-          ? 'bg-slate-900/90 py-0 sm:py-6 sm:px-4 items-center justify-start'
-          : 'bg-neutral-100/60'
-      }`}
-    >
+    <div className="min-h-screen text-neutral-900 font-sans flex flex-col bg-neutral-100/60 w-full max-w-full overflow-x-hidden">
       {/* Toast Notification */}
       {alertNotice && (
         <div className="fixed bottom-5 right-5 z-50 bg-neutral-900 text-white text-xs px-4 py-2.5 rounded-lg shadow-xl border border-neutral-700 flex items-center gap-2 animate-fade-in">
@@ -861,182 +931,67 @@ export default function App() {
         </div>
       )}
 
-      {/* Top Device Viewport Switcher Toolbar (Mobile / Tablet / Desktop / Responsif) */}
-      <DeviceModeSelector
-        deviceMode={deviceMode}
-        onChangeMode={handleSetDeviceMode}
-        activeAppMode={activeAppMode}
-        onSwitchAppMode={(mode) => setActiveAppMode(mode)}
-        itemCount={items.length}
-        locationCount={storageLocations.length}
-        masterProductCount={masterProducts.length}
-      />
-
-      {/* Device Simulator Banner (Shown on desktop when viewing Mobile or Tablet mode) */}
-      {deviceMode === 'mobile' && (
-        <div className="w-full max-w-[440px] hidden sm:flex items-center justify-between text-[11px] text-slate-300 px-3 py-1.5 mb-1 bg-slate-800/90 rounded-t-xl border border-slate-700/60 shadow-xs">
-          <div className="flex items-center gap-1.5 font-bold text-pink-400">
-            <Smartphone className="w-3.5 h-3.5" />
-            <span>Mode Layar HP Mobile (Default Aktif)</span>
-          </div>
-          <div className="flex items-center gap-2 text-slate-400">
-            <button
-              onClick={() => handleSetDeviceMode('tablet')}
-              className="hover:text-white underline text-[10px] cursor-pointer"
-            >
-              Tablet
-            </button>
-            <span>·</span>
-            <button
-              onClick={() => handleSetDeviceMode('desktop')}
-              className="hover:text-white underline text-[10px] cursor-pointer"
-            >
-              Desktop
-            </button>
-            <span>·</span>
-            <button
-              onClick={() => handleSetDeviceMode('auto')}
-              className="hover:text-white underline text-[10px] cursor-pointer"
-            >
-              Layar Penuh
-            </button>
-          </div>
-        </div>
-      )}
-
-      {deviceMode === 'tablet' && (
-        <div className="w-full max-w-3xl hidden sm:flex items-center justify-between text-[11px] text-slate-300 px-3 py-1.5 mb-1 bg-slate-800/90 rounded-t-xl border border-slate-700/60 shadow-xs">
-          <div className="flex items-center gap-1.5 font-bold text-blue-400">
-            <Tablet className="w-3.5 h-3.5" />
-            <span>Mode Layar Tablet (768px — iPad / Terminal Gudang)</span>
-          </div>
-          <div className="flex items-center gap-2 text-slate-400">
-            <button
-              onClick={() => handleSetDeviceMode('mobile')}
-              className="hover:text-white underline text-[10px] cursor-pointer"
-            >
-              Ubah ke Mobile
-            </button>
-            <span>·</span>
-            <button
-              onClick={() => handleSetDeviceMode('desktop')}
-              className="hover:text-white underline text-[10px] cursor-pointer"
-            >
-              Desktop
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* Main Container Sized and Constrained by Device Mode */}
+      {/* Main Container Sized and Constrained by Mode (Default Smartphone, or Wide Desktop) */}
       <div
-        className={`w-full flex-1 flex flex-col transition-all duration-300 ${
-          deviceMode === 'mobile'
-            ? 'max-w-[440px] sm:min-h-[850px] bg-neutral-100 sm:rounded-2xl sm:shadow-2xl sm:border sm:border-slate-700/80 overflow-hidden relative'
-            : deviceMode === 'tablet'
-            ? 'max-w-3xl sm:min-h-[850px] bg-neutral-100 sm:rounded-2xl sm:shadow-xl sm:border sm:border-slate-700/70 overflow-hidden relative'
-            : deviceMode === 'desktop'
-            ? 'max-w-7xl mx-auto'
-            : 'w-full'
+        className={`w-full flex-1 flex flex-col transition-all duration-200 ${
+          isDesktopMode ? 'max-w-7xl mx-auto' : 'max-w-2xl mx-auto w-full'
         }`}
       >
-        {/* Top Header */}
+        {/* Top Header - Bersih, Tidak Offside, Tanpa Duplikasi Navigasi */}
         <header className="bg-white border-b border-neutral-200 sticky top-0 z-40">
-          <div className="px-3 sm:px-6 h-16 flex items-center justify-between gap-2 sm:gap-4">
-            {/* Zone 1: Wordmark & Logo */}
-            <div className="flex items-center gap-2.5 shrink-0">
+          <div className="px-3 sm:px-4 h-14 sm:h-16 flex items-center justify-between gap-2">
+            {/* Logo & Judul Aplikasi */}
+            <div className="flex items-center gap-2 shrink min-w-0">
               <img
                 src="/icon.svg"
                 alt="AEON Health & Beauty Logo"
-                className="w-8 h-8 sm:w-9 sm:h-9 rounded-lg shadow-xs shrink-0 object-cover"
+                className="w-8 h-8 rounded-lg shadow-xs shrink-0 object-cover"
               />
-              <div>
-                <div className="flex items-center gap-1.5">
-                  <span className="text-sm sm:text-lg font-bold tracking-tight text-neutral-900 leading-tight">
+              <div className="min-w-0">
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-xs sm:text-base font-bold tracking-tight text-neutral-900 leading-tight truncate">
                     HBC Backroom Management
                   </span>
-                  <span className="text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#b8126f] text-white tracking-wider">
-                    © 2026
-                  </span>
                 </div>
-                <div className="text-[10px] sm:text-[11px] text-neutral-500 font-medium hidden xs:block">
+                <div className="text-[10px] sm:text-[11px] text-neutral-500 font-medium truncate">
                   AEON Health &amp; Beauty
                 </div>
               </div>
             </div>
 
-            {/* Zone 2: Triple Mode Switcher (1. Retur vs 2. Cek & Lokasi Simpan vs 3. Database) */}
-            <div className="flex items-center p-1 bg-neutral-100 rounded-xl border border-neutral-200">
+            {/* Quick Action & Desktop Mode Toggle (Di pojok kanan atas, bersih & tidak membuat offside) */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              {/* Opsi Mode Desktop / Mode Smartphone - Satu tempat di atas sesuai permintaan user */}
               <button
-                onClick={() => setActiveAppMode('RETURN')}
-                className={`px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                  activeAppMode === 'RETURN'
-                    ? 'bg-white text-neutral-900 shadow-xs'
-                    : 'text-neutral-600 hover:text-neutral-900'
+                type="button"
+                onClick={toggleDesktopMode}
+                className={`px-2 sm:px-2.5 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors cursor-pointer border ${
+                  isDesktopMode
+                    ? 'bg-blue-50 border-blue-300 text-blue-700 hover:bg-blue-100'
+                    : 'bg-neutral-100 border-neutral-300 text-neutral-700 hover:bg-neutral-200'
                 }`}
-                title="Fungsi 1: Pengelolaan Logistik Barang Retur & Deadline Supplier"
+                title={isDesktopMode ? 'Beralih ke tampilan layar smartphone (HP)' : 'Beralih ke tampilan layar desktop penuh'}
               >
-                <Package className="w-3.5 h-3.5 text-[#b8126f]" />
-                <span className={deviceMode === 'mobile' ? 'inline' : 'hidden sm:inline'}>1. Retur</span>
-                <span className="text-[10px] bg-neutral-200/80 text-neutral-800 px-1.5 py-0.2 rounded-full font-mono font-bold">
-                  {items.length}
-                </span>
+                {isDesktopMode ? (
+                  <>
+                    <Smartphone className="w-3.5 h-3.5 text-blue-600" />
+                    <span className="text-[11px] font-bold">Mode HP</span>
+                  </>
+                ) : (
+                  <>
+                    <Monitor className="w-3.5 h-3.5 text-neutral-600" />
+                    <span className="text-[11px] font-bold">Mode Desktop</span>
+                  </>
+                )}
               </button>
 
-              <button
-                onClick={() => setActiveAppMode('STORAGE')}
-                className={`px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                  activeAppMode === 'STORAGE'
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : 'text-neutral-600 hover:text-neutral-900'
-                }`}
-                title="Fungsi 2: Scan Barcode, Cek Kriteria (Outright / Konsinyasi) & Lokasi Rak Simpan"
-              >
-                <MapPin className="w-3.5 h-3.5" />
-                <span className={deviceMode === 'mobile' ? 'inline' : 'hidden sm:inline'}>2. Lokasi</span>
-                <span
-                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold ${
-                    activeAppMode === 'STORAGE'
-                      ? 'bg-blue-700 text-white'
-                      : 'bg-neutral-200/80 text-neutral-800'
-                  }`}
-                >
-                  {storageLocations.length}
-                </span>
-              </button>
-
-              <button
-                onClick={() => setActiveAppMode('DATABASE')}
-                className={`px-2 sm:px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 cursor-pointer ${
-                  activeAppMode === 'DATABASE'
-                    ? 'bg-emerald-700 text-white shadow-xs'
-                    : 'text-neutral-600 hover:text-neutral-900'
-                }`}
-                title="Fungsi 3: Halaman Khusus Database & Proteksi Password"
-              >
-                <Database className="w-3.5 h-3.5 text-emerald-500" />
-                <span className={deviceMode === 'mobile' ? 'inline' : 'hidden sm:inline'}>3. Database</span>
-                <span
-                  className={`text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold ${
-                    activeAppMode === 'DATABASE'
-                      ? 'bg-emerald-800 text-white'
-                      : 'bg-neutral-200/80 text-neutral-800'
-                  }`}
-                >
-                  {masterProducts.length}
-                </span>
-              </button>
-            </div>
-
-            {/* Zone 3: Quick Action Buttons */}
-            <div className="flex items-center gap-1.5 sm:gap-2">
               <button
                 onClick={() => setIsScannerOpen(true)}
-                className="px-2.5 sm:px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors shadow-xs whitespace-nowrap cursor-pointer"
-                title="Pindai barcode barang dengan kamera atau input manual"
+                className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors shadow-xs cursor-pointer"
+                title="Pindai barcode barang"
               >
                 <Camera className="w-3.5 h-3.5" />
-                <span className="hidden md:inline">Scan</span>
+                <span className="hidden sm:inline">Scan</span>
               </button>
 
               <button
@@ -1045,19 +1000,18 @@ export default function App() {
                   setPrefilledBarcode('');
                   setIsFormOpen(true);
                 }}
-                className="px-2.5 sm:px-3 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors shadow-xs whitespace-nowrap cursor-pointer"
+                className="px-2.5 py-1.5 bg-neutral-900 hover:bg-neutral-800 text-white rounded-lg text-xs font-semibold flex items-center gap-1 transition-colors shadow-xs cursor-pointer"
                 title="Input barang retur baru"
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span className="hidden md:inline">Retur Baru</span>
+                <span className="hidden sm:inline">Retur Baru</span>
               </button>
 
-              {/* Ekspor Excel shown on larger header or when not in mobile preview */}
-              {deviceMode !== 'mobile' && (
+              {isDesktopMode && (
                 <button
                   onClick={handleExportExcel}
                   className="hidden lg:flex px-2.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-semibold items-center gap-1.5 transition-colors shadow-2xs whitespace-nowrap cursor-pointer"
-                  title="Ekspor seluruh data barang retur, master produk, dan supplier ke file Excel (.xlsx)"
+                  title="Ekspor seluruh data ke file Excel (.xlsx)"
                 >
                   <FileSpreadsheet className="w-3.5 h-3.5" />
                   <span>Ekspor Excel</span>
@@ -1075,11 +1029,10 @@ export default function App() {
           onSaveStorageLocation={handleSaveStorageLocation}
           onDeleteStorageLocation={handleDeleteStorageLocation}
           onSaveMasterProduct={handleSaveMasterProduct}
-          onOpenMasterModal={() => setIsMasterModalOpen(true)}
           showAlert={showAlert}
         />
       ) : activeAppMode === 'DATABASE' ? (
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 pb-28 w-full flex-1">
+        <main className="w-full px-3 sm:px-6 py-4 sm:py-6 pb-28 flex-1">
           <DatabaseManagementView
             masterProducts={masterProducts}
             suppliers={uniqueSuppliers}
@@ -1092,7 +1045,7 @@ export default function App() {
           />
         </main>
       ) : (
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 py-6 pb-28 w-full space-y-6 flex-1">
+        <main className="w-full px-3 sm:px-6 py-4 sm:py-6 pb-28 space-y-4 sm:space-y-6 flex-1">
         {/* Metric Overview (Tabular figures, unboxed clean styling) */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <div
@@ -1227,9 +1180,9 @@ export default function App() {
 
         {/* Filter and Search Bar */}
         <div className="bg-white p-4 rounded-xl border border-neutral-200 space-y-3">
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+          <div className="flex flex-col lg:flex-row items-stretch lg:items-center justify-between gap-2.5">
             {/* Search Input */}
-            <div className="relative flex-1 max-w-md">
+            <div className="relative flex-1 min-w-0">
               <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
               <input
                 type="text"
@@ -1240,15 +1193,16 @@ export default function App() {
               />
             </div>
 
-            {/* Supplier Dropdown Selector & Kelola Button */}
-            <div className="flex flex-wrap items-center gap-2">
-              <div className="flex items-center gap-1.5 bg-neutral-50 px-2.5 py-1.5 rounded-lg border border-neutral-300">
-                <Building2 className="w-3.5 h-3.5 text-neutral-500" />
-                <span className="text-xs text-neutral-600 font-medium">Supplier:</span>
+            {/* Supplier Dropdown Selector & Actions */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 min-w-0">
+              {/* Supplier Dropdown Selector (Vertical stack on mobile, flexible width, never offside) */}
+              <div className="flex items-center gap-2 bg-neutral-50 px-3 py-2 rounded-lg border border-neutral-300 w-full sm:w-64 md:w-72 min-w-0">
+                <Building2 className="w-4 h-4 text-neutral-500 shrink-0" />
+                <span className="text-xs text-neutral-600 font-semibold shrink-0">Supplier:</span>
                 <select
                   value={selectedSupplierFilter}
                   onChange={(e) => setSelectedSupplierFilter(e.target.value)}
-                  className="text-xs font-semibold bg-transparent border-none focus:outline-none text-neutral-900 pr-2"
+                  className="text-xs font-semibold bg-transparent border-none focus:outline-none text-neutral-900 pr-1 flex-1 min-w-0 truncate cursor-pointer"
                 >
                   <option value="ALL">Semua Supplier Rekanan ({uniqueSuppliers.length})</option>
                   {uniqueSuppliers.map((sup, idx) => (
@@ -1259,55 +1213,49 @@ export default function App() {
                 </select>
               </div>
 
-              <button
-                onClick={() => setIsSupplierModalOpen(true)}
-                className="px-2.5 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-neutral-200 shadow-2xs cursor-pointer"
-                title="Kelola data supplier (Edit, Hapus, atau Tambah Supplier Baru Manual)"
-              >
-                <Users className="w-3.5 h-3.5 text-neutral-600" />
-                <span>Supplier</span>
-              </button>
-
-              <button
-                onClick={() => setIsMasterModalOpen(true)}
-                className="px-2.5 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-neutral-200 shadow-2xs cursor-pointer"
-                title="Database Master Produk XLSX (Impor/Ekspor/Kelola)"
-              >
-                <Database className="w-3.5 h-3.5 text-emerald-600" />
-                <span>Master XLSX</span>
-              </button>
-
-              <button
-                onClick={handleExportExcel}
-                className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-emerald-300 shadow-2xs cursor-pointer"
-                title="Unduh semua data dalam format Excel (.xlsx)"
-              >
-                <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Unduh Excel</span>
-              </button>
-
-              {/* View Toggle */}
-              <div className="flex items-center p-0.5 bg-neutral-100 rounded-lg border border-neutral-200">
+              {/* Action Buttons & View Toggle */}
+              <div className="flex items-center justify-between sm:justify-start gap-2 flex-wrap">
                 <button
-                  onClick={() => setViewMode('table')}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                    viewMode === 'table'
-                      ? 'bg-white text-neutral-900 shadow-2xs font-semibold'
-                      : 'text-neutral-600 hover:text-neutral-900'
-                  }`}
+                  onClick={() => setIsSupplierModalOpen(true)}
+                  className="px-2.5 py-2 bg-neutral-100 hover:bg-neutral-200 text-neutral-800 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-neutral-200 shadow-2xs cursor-pointer shrink-0"
+                  title="Kelola data supplier (Edit, Hapus, atau Tambah Supplier Baru Manual)"
                 >
-                  Tabel
+                  <Users className="w-3.5 h-3.5 text-neutral-600" />
+                  <span>Supplier</span>
                 </button>
+
                 <button
-                  onClick={() => setViewMode('cards')}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                    viewMode === 'cards'
-                      ? 'bg-white text-neutral-900 shadow-2xs font-semibold'
-                      : 'text-neutral-600 hover:text-neutral-900'
-                  }`}
+                  onClick={handleExportExcel}
+                  className="px-2.5 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-colors border border-emerald-300 shadow-2xs cursor-pointer shrink-0"
+                  title="Unduh semua data dalam format Excel (.xlsx)"
                 >
-                  Grid Kartu
+                  <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-700" />
+                  <span>Unduh Excel</span>
                 </button>
+
+                {/* View Toggle */}
+                <div className="flex items-center p-0.5 bg-neutral-100 rounded-lg border border-neutral-200 shrink-0 ml-auto sm:ml-0">
+                  <button
+                    onClick={() => setViewMode('table')}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                      viewMode === 'table'
+                        ? 'bg-white text-neutral-900 shadow-2xs font-semibold'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    Tabel
+                  </button>
+                  <button
+                    onClick={() => setViewMode('cards')}
+                    className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
+                      viewMode === 'cards'
+                        ? 'bg-white text-neutral-900 shadow-2xs font-semibold'
+                        : 'text-neutral-600 hover:text-neutral-900'
+                    }`}
+                  >
+                    Grid Kartu
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -1368,6 +1316,55 @@ export default function App() {
           </div>
         </div>
 
+        {/* Multi-Select Action Bar for Return Items Deletion */}
+        {selectedReturnItemIds.size > 0 && (
+          <div className="p-3 bg-rose-50 border border-rose-300 rounded-xl flex flex-wrap items-center justify-between gap-2.5 text-xs animate-in fade-in shadow-xs">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 rounded-full bg-rose-600 animate-pulse" />
+              <span className="font-bold text-rose-900">
+                Terpilih {selectedReturnItemIds.size} dari {uniqueFilteredItems.length} barang return
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setShowBatchDeleteReturnModal(true)}
+                className="px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white rounded-lg font-bold flex items-center gap-1.5 transition-colors shadow-2xs cursor-pointer"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Hapus ({selectedReturnItemIds.size}) Terpilih</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedReturnItemIds(new Set())}
+                className="px-2.5 py-1.5 bg-white border border-neutral-300 hover:bg-neutral-50 text-neutral-700 rounded-lg font-medium transition-colors cursor-pointer"
+              >
+                Batal Pilihan
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Custom Select Bar (Accessible on both Table & Mobile Card View) */}
+        {uniqueFilteredItems.length > 0 && (
+          <div className="flex items-center justify-between text-xs text-neutral-600 px-1 py-0.5">
+            <label className="flex items-center gap-2 cursor-pointer font-medium hover:text-neutral-900">
+              <input
+                type="checkbox"
+                checked={selectedReturnItemIds.size > 0 && selectedReturnItemIds.size === uniqueFilteredItems.length}
+                onChange={handleToggleSelectAllReturnItems}
+                className="w-4 h-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-900 cursor-pointer"
+              />
+              <span>Pilih Semua Barang Return ({uniqueFilteredItems.length})</span>
+            </label>
+            {selectedReturnItemIds.size > 0 && (
+              <span className="text-rose-600 font-bold">
+                {selectedReturnItemIds.size} terpilih
+              </span>
+            )}
+          </div>
+        )}
+
         {/* Data Presentation (Table or Card Grid) */}
         {uniqueFilteredItems.length === 0 ? (
           /* Empty state */
@@ -1409,6 +1406,15 @@ export default function App() {
               <table className="w-full text-left text-xs border-collapse">
                 <thead>
                   <tr className="bg-neutral-50 border-b border-neutral-200 text-neutral-600 font-semibold uppercase tracking-wider text-[11px]">
+                    <th className="py-3 px-3 text-center w-10">
+                      <input
+                        type="checkbox"
+                        checked={selectedReturnItemIds.size > 0 && selectedReturnItemIds.size === uniqueFilteredItems.length}
+                        onChange={handleToggleSelectAllReturnItems}
+                        className="w-4 h-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-900 cursor-pointer"
+                        title="Pilih / Batalkan semua barang return"
+                      />
+                    </th>
                     <th className="py-3 px-4">Barcode / Produk</th>
                     <th className="py-3 px-4">Supplier & Kontak</th>
                     <th className="py-3 px-4 text-center">Qty</th>
@@ -1422,12 +1428,24 @@ export default function App() {
                   {uniqueFilteredItems.map((item, idx) => {
                     const daysLeft = getDaysRemaining(item.dueDate);
                     const isDone = item.status === 'Sudah Diambil';
+                    const isSelected = selectedReturnItemIds.has(item.id);
 
                     return (
                       <tr
                         key={item.id ? `${item.id}-${idx}` : `item-${idx}`}
-                        className="hover:bg-neutral-50/80 transition-colors group"
+                        className={`hover:bg-neutral-50/80 transition-colors group ${
+                          isSelected ? 'bg-rose-50/50' : ''
+                        }`}
                       >
+                        <td className="py-3 px-3 text-center">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => handleToggleSelectReturnItem(item.id)}
+                            className="w-4 h-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-900 cursor-pointer"
+                            title="Pilih barang return ini"
+                          />
+                        </td>
                         {/* Barcode & Item Name */}
                         <td className="py-3 px-4">
                           <div className="flex items-center gap-2.5">
@@ -1586,15 +1604,28 @@ export default function App() {
               const daysLeft = getDaysRemaining(item.dueDate);
               const isDone = item.status === 'Sudah Diambil';
 
+              const isSelected = selectedReturnItemIds.has(item.id);
+
               return (
                 <div
                   key={item.id ? `${item.id}-${idx}` : `item-${idx}`}
-                  className="bg-white rounded-xl border border-neutral-200 p-5 space-y-4 hover:shadow-sm transition-all flex flex-col justify-between"
+                  className={`bg-white rounded-xl border p-5 space-y-4 hover:shadow-sm transition-all flex flex-col justify-between ${
+                    isSelected ? 'border-rose-400 ring-1 ring-rose-400 bg-rose-50/20' : 'border-neutral-200'
+                  }`}
                 >
                   <div className="space-y-3">
-                    {/* Top Row: Barcode & Status */}
+                    {/* Top Row: Checkbox, Barcode & Status */}
                     <div className="flex items-start justify-between gap-2">
-                      <BarcodeBadge value={item.barcode} height={36} />
+                      <div className="flex items-center gap-2.5">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => handleToggleSelectReturnItem(item.id)}
+                          className="w-4 h-4 rounded border-neutral-300 text-neutral-900 focus:ring-neutral-900 cursor-pointer shrink-0"
+                          title="Pilih barang return ini untuk hapus custom select"
+                        />
+                        <BarcodeBadge value={item.barcode} height={36} />
+                      </div>
                       <span
                         className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
                           item.status === 'Sudah Diambil'
@@ -1711,14 +1742,6 @@ export default function App() {
             >
               <FileSpreadsheet className="w-3.5 h-3.5" />
               <span>Ekspor Semua ke Excel (.xlsx)</span>
-            </button>
-
-            <button
-              onClick={() => setIsMasterModalOpen(true)}
-              className="hover:text-neutral-900 underline flex items-center gap-1 cursor-pointer"
-            >
-              <Database className="w-3.5 h-3.5" />
-              <span>Database Master XLSX</span>
             </button>
 
             <button
@@ -1936,6 +1959,7 @@ export default function App() {
         items={items}
         onSaveSupplier={handleSaveSupplier}
         onDeleteSupplier={handleDeleteSupplier}
+        onBatchDeleteSuppliers={handleBatchDeleteSuppliers}
         onFilterBySupplier={(supId) => setSelectedSupplierFilter(supId)}
       />
 
@@ -1955,6 +1979,47 @@ export default function App() {
         onBatchSaveMasterProducts={handleBatchSaveMasterProducts}
         onDeleteMasterProduct={handleDeleteMasterProduct}
       />
+
+      {/* 8. Batch Delete Return Items Confirmation Modal */}
+      {showBatchDeleteReturnModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-xs p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-neutral-200 space-y-4">
+            <div className="w-12 h-12 rounded-full bg-rose-100 flex items-center justify-center text-rose-600 mx-auto">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <div className="text-center space-y-1">
+              <h3 className="text-base font-bold text-neutral-900">
+                Hapus {selectedReturnItemIds.size} Barang Return Terpilih?
+              </h3>
+              <p className="text-xs text-neutral-500">
+                Data barang return yang Anda pilih akan dihapus secara permanen dari Cloud Firestore dan memori perangkat. Tindakan ini tidak dapat dibatalkan.
+              </p>
+            </div>
+            <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl text-xs text-rose-800 font-medium">
+              ⚠️ Pastikan barang fisik memang sudah diselesaikan atau dibatalkan sebelum dihapus dari sistem.
+            </div>
+            <div className="flex items-center gap-2 pt-2">
+              <button
+                type="button"
+                disabled={isDeletingReturnItems}
+                onClick={() => setShowBatchDeleteReturnModal(false)}
+                className="flex-1 py-2.5 text-xs font-semibold border border-neutral-300 hover:bg-neutral-50 rounded-xl text-neutral-700 cursor-pointer"
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                disabled={isDeletingReturnItems}
+                onClick={handleExecuteBatchDeleteReturnItems}
+                className="flex-1 py-2.5 text-xs font-semibold bg-rose-600 hover:bg-rose-700 text-white rounded-xl flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-xs disabled:opacity-50"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>{isDeletingReturnItems ? 'Menghapus...' : `Ya, Hapus (${selectedReturnItemIds.size}) Barang`}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

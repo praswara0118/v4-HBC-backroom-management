@@ -7,6 +7,7 @@ import {
   Plus,
   Sparkles,
   AlertCircle,
+  AlertTriangle,
   Calendar,
   Image as ImageIcon,
   Trash2,
@@ -153,6 +154,24 @@ export const ReturnFormModal: React.FC<ReturnFormModalProps> = ({
     }
     return Array.from(map.values());
   }, [suppliers]);
+
+  // Deteksi real-time supplier yang serupa di database saat mengetik nama supplier baru
+  const similarSuppliers = React.useMemo(() => {
+    const q = newSupName.trim().toLowerCase();
+    if (q.length < 2) return [];
+
+    const words = q.split(/\s+/).filter((w) => w.length > 1);
+
+    return uniqueSuppliers
+      .filter((s) => {
+        if (!s || !s.name) return false;
+        const sName = s.name.toLowerCase();
+        const sCode = (s.code || '').toLowerCase();
+        if (sName.includes(q) || sCode.includes(q)) return true;
+        return words.some((word) => sName.includes(word));
+      })
+      .slice(0, 4);
+  }, [newSupName, uniqueSuppliers]);
 
   // Helper to add days
   const addDaysToDate = (dateStr: string, days: number): string => {
@@ -738,11 +757,43 @@ export const ReturnFormModal: React.FC<ReturnFormModalProps> = ({
                     </label>
                     <input
                       type="text"
-                      placeholder="Contoh: PT Sumber Alfaria / CV Berkah"
+                      placeholder="Contoh: PT Sumber Alfaria / CV Berkah / Daya"
                       value={newSupName}
                       onChange={(e) => setNewSupName(e.target.value)}
                       className="w-full px-2.5 py-1.5 text-xs border border-neutral-300 rounded focus:outline-none focus:ring-1 focus:ring-neutral-900"
                     />
+
+                    {/* Real-time Similar Supplier Alert Box */}
+                    {similarSuppliers.length > 0 && (
+                      <div className="mt-2 p-2.5 bg-amber-50 border border-amber-300 rounded text-xs space-y-1.5 animate-in fade-in duration-150">
+                        <div className="flex items-center gap-1 font-bold text-amber-900 text-[11px]">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                          <span>Supplier serupa sudah ada di database:</span>
+                        </div>
+                        {similarSuppliers.map((s) => (
+                          <div
+                            key={s.id}
+                            className="p-1.5 bg-white rounded border border-amber-200 flex items-center justify-between gap-1.5 text-[11px]"
+                          >
+                            <div className="truncate">
+                              <span className="font-bold text-neutral-900">{s.name}</span>
+                              <span className="text-neutral-500 ml-1">({s.code})</span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedSupplierId(s.id);
+                                setIsAddingNewSupplier(false);
+                                setNewSupName('');
+                              }}
+                              className="px-2 py-0.5 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10px] font-semibold shrink-0 cursor-pointer"
+                            >
+                              Gunakan Ini
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div>
                     <label className="block text-[11px] font-semibold text-neutral-600 mb-1">
@@ -817,7 +868,7 @@ export const ReturnFormModal: React.FC<ReturnFormModalProps> = ({
                 <select
                   value={selectedSupplierId}
                   onChange={(e) => handleSupplierChange(e.target.value)}
-                  className="w-full px-3 py-2 text-sm border border-neutral-300 rounded-md focus:outline-none focus:ring-2 focus:ring-neutral-900 bg-white"
+                  className="w-full max-w-full min-w-0 truncate px-3 py-2 text-sm border border-neutral-300 rounded-md focus:outline-none focus:ring-2 focus:ring-neutral-900 bg-white"
                 >
                   <option value="" disabled>
                     -- Pilih Supplier Rekanan --

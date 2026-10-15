@@ -39,6 +39,7 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  Database,
 } from 'lucide-react';
 
 interface StorageLocationViewProps {
@@ -47,7 +48,7 @@ interface StorageLocationViewProps {
   onSaveStorageLocation: (location: StorageLocation) => Promise<void>;
   onDeleteStorageLocation: (locationId: string) => Promise<void>;
   onSaveMasterProduct: (product: MasterProduct) => Promise<void>;
-  onOpenMasterModal: () => void;
+  onOpenMasterModal?: () => void;
   showAlert: (msg: string) => void;
 }
 
@@ -67,6 +68,7 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
 
   // Filter state for the full inventory list
   const [filterKriteria, setFilterKriteria] = useState<'ALL' | 'OUTRIGHT' | 'CONSIGNMENT'>('ALL');
+  const [filterDepartment, setFilterDepartment] = useState('ALL');
   const [filterLocationStatus, setFilterLocationStatus] = useState<'ALL' | 'HAS_LOCATION' | 'NO_LOCATION'>('ALL');
   const [filterZone, setFilterZone] = useState('ALL');
   const [tableSearch, setTableSearch] = useState('');
@@ -122,6 +124,17 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
     });
     return Array.from(set).sort();
   }, [storageLocations]);
+
+  // Unique departments for filtering in Directory Tab (mirrors DatabaseManagementView)
+  const uniqueDepartments = useMemo(() => {
+    const set = new Set<string>();
+    masterProducts.forEach((p) => {
+      if (p.department && p.department.trim()) {
+        set.add(p.department.trim());
+      }
+    });
+    return Array.from(set).sort();
+  }, [masterProducts]);
 
   // On-demand fetched item state (to prevent needing full database loaded in memory)
   const [fetchedProduct, setFetchedProduct] = useState<MasterProduct | null>(null);
@@ -414,6 +427,13 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
         if (p.procurementType !== 'CONSIGNMENT') return false;
       }
 
+      // Department filter (mirrors DatabaseManagementView)
+      if (filterDepartment !== 'ALL') {
+        if (!p.department || p.department.trim().toLowerCase() !== filterDepartment.trim().toLowerCase()) {
+          return false;
+        }
+      }
+
       // Location status filter
       if (filterLocationStatus === 'HAS_LOCATION' && !loc) return false;
       if (filterLocationStatus === 'NO_LOCATION' && loc) return false;
@@ -440,16 +460,16 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
 
       return true;
     });
-  }, [masterProducts, locationByBarcode, filterKriteria, filterLocationStatus, filterZone, tableSearch]);
+  }, [masterProducts, locationByBarcode, filterKriteria, filterDepartment, filterLocationStatus, filterZone, tableSearch]);
 
-  // Pagination state for Directory Tab (Hemat Beban Tampilan & Kuota)
+  // Pagination state for Directory Tab (Default 15 data contoh sesuai permintaan user agar hemat kuota & ringan di HP)
   const [directoryPage, setDirectoryPage] = useState<number>(1);
-  const [directoryPageSize, setDirectoryPageSize] = useState<number>(24);
+  const [directoryPageSize, setDirectoryPageSize] = useState<number>(15);
 
   // Reset pagination ke halaman 1 saat filter direktori berubah
   useEffect(() => {
     setDirectoryPage(1);
-  }, [filterKriteria, filterLocationStatus, filterZone, tableSearch, directoryPageSize]);
+  }, [filterKriteria, filterDepartment, filterLocationStatus, filterZone, tableSearch, directoryPageSize]);
 
   const totalDirectoryPages = Math.max(1, Math.ceil(directoryItems.length / directoryPageSize));
 
@@ -519,14 +539,6 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
             <FileSpreadsheet className="w-4 h-4 text-emerald-600" />
             <span>Ekspor Excel (.xlsx)</span>
           </button>
-
-          <button
-            onClick={onOpenMasterModal}
-            className="flex-1 sm:flex-none inline-flex items-center justify-center gap-2 px-3.5 py-2.5 bg-neutral-100 border border-neutral-200 text-neutral-800 rounded-xl text-xs font-semibold hover:bg-neutral-200/80 transition-colors"
-          >
-            <FolderOpen className="w-4 h-4 text-neutral-600" />
-            <span>Kelola Master Produk</span>
-          </button>
         </div>
       </div>
 
@@ -558,28 +570,30 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
           <div className="text-[10px] text-amber-600 mt-0.5">Perlu dicatat lokasi simpannya</div>
         </div>
 
-        <div className="bg-white border border-neutral-200 rounded-xl p-3.5 shadow-2xs">
+        <div className="bg-white border border-neutral-200 rounded-xl p-3 sm:p-3.5 shadow-2xs flex flex-col justify-between">
           <div className="text-[11px] font-semibold text-neutral-500 uppercase tracking-wider mb-1 flex items-center justify-between">
             <span>Kriteria Produk</span>
-            <Tag className="w-3.5 h-3.5 text-neutral-400" />
+            <Tag className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
           </div>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-xs font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
-              Outright: {outrightCount}
-            </span>
-            <span className="text-xs font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
-              Konsinyasi: {consignmentCount}
-            </span>
+          <div className="flex flex-col gap-1.5 my-1 w-full">
+            <div className="flex items-center justify-between px-2.5 py-1 bg-blue-50 text-blue-800 rounded-lg border border-blue-200 text-xs">
+              <span className="font-medium text-[11px]">Outright:</span>
+              <span className="font-bold">{outrightCount}</span>
+            </div>
+            <div className="flex items-center justify-between px-2.5 py-1 bg-amber-50 text-amber-800 rounded-lg border border-amber-200 text-xs">
+              <span className="font-medium text-[11px]">Konsinyasi:</span>
+              <span className="font-bold">{consignmentCount}</span>
+            </div>
           </div>
-          <div className="text-[10px] text-neutral-400 mt-1.5">Sistem kepemilikan barang</div>
+          <div className="text-[10px] text-neutral-400">Sistem kepemilikan barang</div>
         </div>
       </div>
 
       {/* Navigation Sub-Tabs */}
-      <div className="flex items-center gap-2 border-b border-neutral-200 pb-2">
+      <div className="flex items-center gap-2 border-b border-neutral-200 pb-2 overflow-x-auto scrollbar-none">
         <button
           onClick={() => setActiveTab('SCAN')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 whitespace-nowrap shrink-0 ${
             activeTab === 'SCAN'
               ? 'bg-neutral-900 text-white shadow-xs'
               : 'bg-white text-neutral-600 border border-neutral-200 hover:bg-neutral-50'
@@ -594,7 +608,7 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
 
         <button
           onClick={() => setActiveTab('DIRECTORY')}
-          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 ${
+          className={`px-4 py-2 rounded-xl text-xs font-bold transition-all flex items-center gap-2 whitespace-nowrap shrink-0 ${
             activeTab === 'DIRECTORY'
               ? 'bg-neutral-900 text-white shadow-xs'
               : 'bg-white text-neutral-600 border border-neutral-200 hover:bg-neutral-50'
@@ -799,13 +813,10 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
                   </p>
                 </div>
 
-                <button
-                  onClick={onOpenMasterModal}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-neutral-900 text-white rounded-xl text-xs font-bold hover:bg-neutral-800 transition-colors"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Daftarkan ke Database Master Sekarang</span>
-                </button>
+                <div className="p-3 bg-neutral-100 rounded-xl text-xs text-neutral-700 flex items-center gap-2 font-medium">
+                  <Database className="w-4 h-4 text-neutral-700 shrink-0" />
+                  <span>Untuk mendaftarkan produk baru, silakan buka menu <strong>Database</strong> (terproteksi kata sandi).</span>
+                </div>
               </div>
             ) : (
               /* Product Found in Master Database */
@@ -833,7 +844,7 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
                     </div>
 
                     {/* PROCUREMENT TYPE BADGE (OUTRIGHT vs CONSIGNMENT) */}
-                    <div className="flex flex-col items-end gap-1.5">
+                    <div className="flex flex-col sm:items-end items-start gap-1.5 w-full sm:w-auto">
                       {currentProduct.procurementType === 'CONSIGNMENT' ? (
                         <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-800">
                           <span className="w-2.5 h-2.5 rounded-full bg-amber-500" />
@@ -863,7 +874,7 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
 
                   {/* Criteria Explanation Banner */}
                   <div
-                    className={`mt-4 p-3 rounded-xl border text-xs flex items-center justify-between gap-3 ${
+                    className={`mt-4 p-3 rounded-xl border text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2 sm:gap-3 ${
                       currentProduct.procurementType === 'CONSIGNMENT'
                         ? 'bg-amber-50/60 border-amber-200 text-amber-900'
                         : 'bg-blue-50/60 border-blue-200 text-blue-900'
@@ -1295,21 +1306,36 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
               />
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
               <select
                 value={filterKriteria}
                 onChange={(e) => setFilterKriteria(e.target.value as any)}
-                className="px-2.5 py-2 text-xs border border-neutral-300 rounded-lg bg-white focus:outline-none font-medium"
+                className="flex-1 sm:flex-none px-2.5 py-2 text-xs border border-neutral-300 rounded-lg bg-white focus:outline-none font-medium min-w-0"
               >
                 <option value="ALL">Semua Kriteria</option>
                 <option value="OUTRIGHT">Outright (Beli Putus)</option>
                 <option value="CONSIGNMENT">Konsinyasi (Titip Jual)</option>
               </select>
 
+              {/* Filter Departemen (sama seperti di halaman database) */}
+              <select
+                value={filterDepartment}
+                onChange={(e) => setFilterDepartment(e.target.value)}
+                className="flex-1 sm:flex-none px-2.5 py-2 text-xs border border-neutral-300 rounded-lg bg-white focus:outline-none font-medium max-w-full sm:max-w-[170px] truncate min-w-0"
+                title="Filter berdasarkan Departemen produk"
+              >
+                <option value="ALL">Semua Dept ({uniqueDepartments.length})</option>
+                {uniqueDepartments.map((dept) => (
+                  <option key={dept} value={dept}>
+                    {dept}
+                  </option>
+                ))}
+              </select>
+
               <select
                 value={filterLocationStatus}
                 onChange={(e) => setFilterLocationStatus(e.target.value as any)}
-                className="px-2.5 py-2 text-xs border border-neutral-300 rounded-lg bg-white focus:outline-none font-medium"
+                className="flex-1 sm:flex-none px-2.5 py-2 text-xs border border-neutral-300 rounded-lg bg-white focus:outline-none font-medium min-w-0"
               >
                 <option value="ALL">Semua Status Lokasi</option>
                 <option value="HAS_LOCATION">Sudah Ada Lokasi ({storageLocations.length})</option>
@@ -1320,7 +1346,7 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
                 <select
                   value={filterZone}
                   onChange={(e) => setFilterZone(e.target.value)}
-                  className="px-2.5 py-2 text-xs border border-neutral-300 rounded-lg bg-white focus:outline-none font-medium"
+                  className="flex-1 sm:flex-none px-2.5 py-2 text-xs border border-neutral-300 rounded-lg bg-white focus:outline-none font-medium min-w-0"
                 >
                   <option value="ALL">Semua Zona</option>
                   {uniqueZones.map((z) => (
@@ -1608,9 +1634,10 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
                   onChange={(e) => setDirectoryPageSize(Number(e.target.value))}
                   className="px-2 py-1 border border-neutral-300 rounded-lg bg-white text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-blue-600 cursor-pointer"
                 >
-                  <option value={24}>24 item</option>
-                  <option value={48}>48 item</option>
-                  <option value={96}>96 item</option>
+                  <option value={15}>15 item (Contoh)</option>
+                  <option value={30}>30 item</option>
+                  <option value={50}>50 item</option>
+                  <option value={100}>100 item</option>
                 </select>
               </div>
             </div>
