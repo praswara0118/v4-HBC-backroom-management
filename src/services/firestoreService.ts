@@ -6,6 +6,11 @@ import {
   onSnapshot,
   getDocs,
   getDoc,
+  query,
+  where,
+  limit,
+  orderBy,
+  getCountFromServer,
 } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { ReturnItem, Supplier, MasterProduct, StorageLocation } from '../types/inventory';
@@ -265,6 +270,288 @@ export function subscribeToStorageLocations(
   );
 }
 
+// =========================================================================
+// OPTIMASI KUOTA FIRESTORE: CACHING, HITUNGAN COUNT MURAH & QUERY PAGINATION
+// =========================================================================
+
+interface MasterCounts {
+  total: number;
+  consignment: number;
+  outright: number;
+  lastUpdated: number;
+}
+
+let cachedCounts: MasterCounts | null = null;
+let cachedStorageCount: { count: number; lastUpdated: number } | null = null;
+
+// Memory cache for individual barcode lookups to avoid repeat Firestore reads
+const masterBarcodeCache = new Map<string, MasterProduct>();
+const storageBarcodeCache = new Map<string, StorageLocation>();
+
+export function invalidateMasterProductCache(): void {
+  cachedCounts = null;
+  masterBarcodeCache.clear();
+  try {
+    sessionStorage.removeItem('hbc_master_counts');
+  } catch {}
+}
+
+export function invalidateStorageLocationCache(): void {
+  cachedStorageCount = null;
+  storageBarcodeCache.clear();
+  try {
+    sessionStorage.removeItem('hbc_storage_count');
+  } catch {}
+}
+
+/**
+ * Dapatkan total item master produk, konsinyasi, dan outright dengan getCountFromServer
+ * (Hanya menggunakan 1 read unit per 1.000 dokumen, sangat hemat kuota)
+ * dan simpan di cache client selama 3 menit.
+ */
+export async function getMasterProductCounts(
+  forceRefresh = false
+): Promise<{ total: number; consignment: number; outright: number }> {
+  const now = Date.now();
+  const CACHE_TTL_MS = 3 * 60 * 1000; // 3 menit
+
+  if (!forceRefresh && cachedCounts && now - cachedCounts.lastUpdated < CACHE_TTL_MS) {
+    return {
+      total: cachedCounts.total,
+      consignment: cachedCounts.consignment,
+      outright: cachedCounts.outright,
+    };
+  }
+
+  // Coba ambil dari sessionStorage
+  if (!forceRefresh) {
+    try {
+      const stored = sessionStorage.getItem('hbc_master_counts');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (parsed && now - parsed.lastUpdated < CACHE_TTL_MS) {
+          cachedCounts = parsed;
+          return {
+            total: parsed.total,
+            consignment: parsed.consignment,
+            outright: parsed.outright,
+          };
+        }
+      }
+    } catch {}
+  }
+
+  try {
+    const colRef = collection(db, MASTER_PRODUCTS_COLLECTION);
+    const [totalSnap, consignmentSnap, outrightSnap] = await Promise.all([
+      getCountFromServer(colRef),
+      getCountFromServer(query(colRef, where('procurementType', '==', 'CONSIGNMENT'))),
+      getCountFromServer(query(colRef, where('procurementType', '==', 'OUTRIGHT'))),
+    ]);
+
+    const total = totalSnap.data().count;
+    const consignment = consignmentSnap.data().count;
+    const outright = outrightSnap.data().count;
+
+    cachedCounts = {
+      total,
+      consignment,
+      outright,
+      lastUpdated: now,
+    };
+
+    try {
+      sessionStorage.setItem('hbc_master_counts', JSON.stringify(cachedCounts));
+    } catch {}
+
+    return { total, consignment, outright };
+  } catch (err) {
+    console.warn('Gagal menghitung master product via getCountFromServer, fallback:', err);
+    try {
+      const local = localStorage.getItem('returku_master_products_v1');
+      if (local) {
+        const items = JSON.parse(local) as MasterProduct[];
+        const total = items.length;
+        const consignment = items.filter((i) => i.procurementType === 'CONSIGNMENT').length;
+        const outright = items.filter((i) => !i.procurementType || i.procurementType === 'OUTRIGHT').length;
+        return { total, consignment, outright };
+      }
+    } catch {}
+    return { total: 0, consignment: 0, outright: 0 };
+  }
+}
+
+/**
+ * Hitung jumlah total lokasi penyimpanan dengan getCountFromServer
+ */
+export async function getStorageLocationsCount(forceRefresh = false): Promise<number> {
+  const now = Date.now();
+  const CACHE_TTL_MS = 3 * 60 * 1000;
+
+  if (!forceRefresh && cachedStorageCount && now - cachedStorageCount.lastUpdated < CACHE_TTL_MS) {
+    return cachedStorageCount.count;
+  }
+
+  try {
+    const colRef = collection(db, STORAGE_LOCATIONS_COLLECTION);
+    const snap = await getCountFromServer(colRef);
+    const count = snap.data().count;
+    cachedStorageCount = { count, lastUpdated: now };
+    try {
+      sessionStorage.setItem('hbc_storage_count', JSON.stringify(cachedStorageCount));
+    } catch {}
+    return count;
+  } catch (err) {
+    console.warn('Gagal menghitung storage locations via getCountFromServer, fallback:', err);
+    try {
+      const local = localStorage.getItem('returku_storage_locations_v1');
+      if (local) {
+        return (JSON.parse(local) as any[]).length;
+      }
+    } catch {}
+    return 0;
+  }
+}
+
+/**
+ * Cari produk berdasarkan barcode secara tepat sasaran (hanya 1 read, atau 0 read jika ada di cache)
+ */
+export async function getMasterProductByBarcode(
+  barcode: string,
+  localFallbackList: MasterProduct[] = []
+): Promise<MasterProduct | null> {
+  const cleanCode = (barcode || '').trim().toLowerCase();
+  if (!cleanCode) return null;
+
+  // 1. Cek memory cache
+  if (masterBarcodeCache.has(cleanCode)) {
+    return masterBarcodeCache.get(cleanCode)!;
+  }
+
+  // 2. Cek local list yang sedang aktif di client
+  const foundInLocal = localFallbackList.find(
+    (p) => p.barcode && p.barcode.toLowerCase().trim() === cleanCode
+  );
+  if (foundInLocal) {
+    masterBarcodeCache.set(cleanCode, foundInLocal);
+    return foundInLocal;
+  }
+
+  // 3. Cek localStorage
+  try {
+    const raw = localStorage.getItem('returku_master_products_v1');
+    if (raw) {
+      const parsed = JSON.parse(raw) as MasterProduct[];
+      const hit = parsed.find(
+        (p) => p.barcode && p.barcode.toLowerCase().trim() === cleanCode
+      );
+      if (hit) {
+        masterBarcodeCache.set(cleanCode, hit);
+        return hit;
+      }
+    }
+  } catch {}
+
+  // 4. Query tepat sasaran ke Firestore dengan limit(1)
+  try {
+    const q = query(
+      collection(db, MASTER_PRODUCTS_COLLECTION),
+      where('barcode', '==', barcode.trim()),
+      limit(1)
+    );
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      const docSnap = snap.docs[0];
+      const prod = {
+        ...(docSnap.data() as MasterProduct),
+        id: docSnap.id,
+      };
+      masterBarcodeCache.set(cleanCode, prod);
+      return prod;
+    }
+  } catch (err) {
+    console.warn('Gagal mencari master product by barcode di Firestore:', err);
+  }
+
+  return null;
+}
+
+/**
+ * Cari data lokasi penyimpanan berdasarkan barcode secara tepat sasaran (1 read, atau 0 jika di cache)
+ */
+export async function getStorageLocationByBarcode(
+  barcode: string,
+  localFallbackList: StorageLocation[] = []
+): Promise<StorageLocation | null> {
+  const cleanCode = (barcode || '').trim().toLowerCase();
+  if (!cleanCode) return null;
+
+  if (storageBarcodeCache.has(cleanCode)) {
+    return storageBarcodeCache.get(cleanCode)!;
+  }
+
+  const foundInLocal = localFallbackList.find(
+    (l) => l.barcode && l.barcode.toLowerCase().trim() === cleanCode
+  );
+  if (foundInLocal) {
+    storageBarcodeCache.set(cleanCode, foundInLocal);
+    return foundInLocal;
+  }
+
+  try {
+    const raw = localStorage.getItem('returku_storage_locations_v1');
+    if (raw) {
+      const parsed = JSON.parse(raw) as StorageLocation[];
+      const hit = parsed.find(
+        (l) => l.barcode && l.barcode.toLowerCase().trim() === cleanCode
+      );
+      if (hit) {
+        storageBarcodeCache.set(cleanCode, hit);
+        return hit;
+      }
+    }
+  } catch {}
+
+  try {
+    const q = query(
+      collection(db, STORAGE_LOCATIONS_COLLECTION),
+      where('barcode', '==', barcode.trim()),
+      limit(1)
+    );
+    const snap = await getDocs(q);
+    if (!snap.empty) {
+      const docSnap = snap.docs[0];
+      const loc = {
+        ...(docSnap.data() as StorageLocation),
+        id: docSnap.id,
+      };
+      storageBarcodeCache.set(cleanCode, loc);
+      return loc;
+    }
+  } catch (err) {
+    console.warn('Gagal mencari storage location by barcode di Firestore:', err);
+  }
+
+  return null;
+}
+
+/**
+ * Simpan daftar departemen di cache client agar tidak re-fetch terus menerus
+ */
+export function getCachedDepartments(): string[] {
+  try {
+    const raw = localStorage.getItem('hbc_cached_departments');
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return [];
+}
+
+export function saveCachedDepartments(departments: string[]): void {
+  try {
+    localStorage.setItem('hbc_cached_departments', JSON.stringify(departments));
+  } catch {}
+}
+
 export function sanitizeDataForFirestore<T extends Record<string, any>>(data: T): Record<string, any> {
   const result: Record<string, any> = {};
   for (const [key, value] of Object.entries(data)) {
@@ -341,6 +628,7 @@ export async function saveMasterProductToFirestore(product: MasterProduct): Prom
   try {
     const payload = sanitizeDataForFirestore(product);
     await setDoc(docRef, payload, { merge: true });
+    invalidateMasterProductCache();
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `${MASTER_PRODUCTS_COLLECTION}/${product.id}`);
   }
@@ -359,6 +647,7 @@ export async function batchSaveMasterProductsToFirestore(products: MasterProduct
       console.warn('Error saving product in batch:', product.barcode, err);
     }
   }
+  invalidateMasterProductCache();
 }
 
 /**
@@ -368,6 +657,7 @@ export async function deleteMasterProductFromFirestore(productId: string): Promi
   const docRef = doc(db, MASTER_PRODUCTS_COLLECTION, productId);
   try {
     await deleteDoc(docRef);
+    invalidateMasterProductCache();
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `${MASTER_PRODUCTS_COLLECTION}/${productId}`);
   }
@@ -411,6 +701,7 @@ export async function batchDeleteMasterProductsFromFirestore(productIds: string[
   } catch (err) {
     console.warn('Cleanup check error on batch delete:', err);
   }
+  invalidateMasterProductCache();
 }
 
 /**
@@ -420,6 +711,7 @@ export async function clearAllMasterProductsFromFirestore(ids?: string[]): Promi
   try {
     if (ids && ids.length > 0) {
       await batchDeleteMasterProductsFromFirestore(ids);
+      invalidateMasterProductCache();
       return;
     }
     const snapshot = await getDocs(collection(db, MASTER_PRODUCTS_COLLECTION));
@@ -429,6 +721,7 @@ export async function clearAllMasterProductsFromFirestore(ids?: string[]): Promi
       const chunk = docs.slice(i, i + batchSize);
       await Promise.all(chunk.map((d) => deleteDoc(d.ref)));
     }
+    invalidateMasterProductCache();
   } catch (error) {
     console.warn('Error clearing master products from Firestore:', error);
   }
@@ -442,6 +735,7 @@ export async function saveStorageLocationToFirestore(location: StorageLocation):
   try {
     const payload = sanitizeDataForFirestore(location);
     await setDoc(docRef, payload, { merge: true });
+    invalidateStorageLocationCache();
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `${STORAGE_LOCATIONS_COLLECTION}/${location.id}`);
   }
@@ -460,6 +754,7 @@ export async function batchSaveStorageLocationsToFirestore(locations: StorageLoc
       console.warn('Error saving storage location in batch:', loc.barcode, err);
     }
   }
+  invalidateStorageLocationCache();
 }
 
 /**
@@ -469,6 +764,7 @@ export async function deleteStorageLocationFromFirestore(locationId: string): Pr
   const docRef = doc(db, STORAGE_LOCATIONS_COLLECTION, locationId);
   try {
     await deleteDoc(docRef);
+    invalidateStorageLocationCache();
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, `${STORAGE_LOCATIONS_COLLECTION}/${locationId}`);
   }

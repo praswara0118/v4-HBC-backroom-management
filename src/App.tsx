@@ -161,7 +161,16 @@ export default function App() {
     } catch {}
     return INITIAL_MASTER_PRODUCTS;
   });
-  const [storageLocations, setStorageLocations] = useState<StorageLocation[]>(INITIAL_STORAGE_LOCATIONS);
+  const [storageLocations, setStorageLocations] = useState<StorageLocation[]>(() => {
+    try {
+      const cached = localStorage.getItem(STORAGE_KEY_STORAGE_LOCATIONS);
+      if (cached !== null) {
+        const parsed = JSON.parse(cached);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+    return INITIAL_STORAGE_LOCATIONS;
+  });
   const [isCloudConnected, setIsCloudConnected] = useState(false);
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
@@ -944,7 +953,7 @@ export default function App() {
               <div>
                 <div className="flex items-center gap-1.5">
                   <span className="text-sm sm:text-lg font-bold tracking-tight text-neutral-900 leading-tight">
-                    HBC Return
+                    HBC Backroom Management
                   </span>
                   <span className="text-[9px] sm:text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#b8126f] text-white tracking-wider">
                     © 2026
@@ -1831,7 +1840,7 @@ export default function App() {
       <footer className="bg-white border-t border-neutral-200 py-4 text-center text-xs text-neutral-500 pb-28">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div>
-            HBC Return © 2026 — AEON Health &amp; Beauty Care Logistik Retur Gudang
+            HBC Backroom Management © 2026 — AEON Health &amp; Beauty Care Logistik Retur Gudang
           </div>
           <div className="flex items-center gap-4 text-[11px]">
             <span>Database Master XLSX &amp; Cloud Firestore</span>

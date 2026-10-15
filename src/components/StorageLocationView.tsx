@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   MasterProduct,
   StorageLocation,
@@ -6,6 +6,10 @@ import {
 } from '../types/inventory';
 import { exportStorageLocationsToExcel } from '../utils/excelService';
 import { BarcodeScannerModal } from './BarcodeScannerModal';
+import {
+  getMasterProductByBarcode,
+  getStorageLocationByBarcode,
+} from '../services/firestoreService';
 import {
   Search,
   Camera,
@@ -31,6 +35,10 @@ import {
   Sparkles,
   LayoutGrid,
   List,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
 } from 'lucide-react';
 
 interface StorageLocationViewProps {
@@ -115,27 +123,63 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
     return Array.from(set).sort();
   }, [storageLocations]);
 
+  // On-demand fetched item state (to prevent needing full database loaded in memory)
+  const [fetchedProduct, setFetchedProduct] = useState<MasterProduct | null>(null);
+  const [fetchedLocation, setFetchedLocation] = useState<StorageLocation | null>(null);
+
   // Currently selected product from master
   const currentProduct = useMemo(() => {
     if (!selectedBarcode) return null;
-    return masterByBarcode.get(selectedBarcode.toLowerCase().trim()) || null;
-  }, [selectedBarcode, masterByBarcode]);
+    const clean = selectedBarcode.toLowerCase().trim();
+    const inMemory = masterByBarcode.get(clean);
+    if (inMemory) return inMemory;
+    if (fetchedProduct && fetchedProduct.barcode.toLowerCase().trim() === clean) {
+      return fetchedProduct;
+    }
+    return null;
+  }, [selectedBarcode, masterByBarcode, fetchedProduct]);
 
   // Storage location for currently selected product
   const currentLocation = useMemo(() => {
     if (!selectedBarcode) return null;
-    return locationByBarcode.get(selectedBarcode.toLowerCase().trim()) || null;
-  }, [selectedBarcode, locationByBarcode]);
+    const clean = selectedBarcode.toLowerCase().trim();
+    const inMemory = locationByBarcode.get(clean);
+    if (inMemory) return inMemory;
+    if (fetchedLocation && fetchedLocation.barcode.toLowerCase().trim() === clean) {
+      return fetchedLocation;
+    }
+    return null;
+  }, [selectedBarcode, locationByBarcode, fetchedLocation]);
 
-  // Handle barcode scanned or selected
-  const handleSelectBarcode = (code: string) => {
+  // Handle barcode scanned or selected with targeted on-demand fetch (Quota-friendly)
+  const handleSelectBarcode = async (code: string) => {
     const trimmed = code.trim();
     setSelectedBarcode(trimmed);
     setSearchInput(trimmed);
     setActiveTab('SCAN');
 
-    const matchedProd = masterByBarcode.get(trimmed.toLowerCase());
-    const matchedLoc = locationByBarcode.get(trimmed.toLowerCase());
+    let matchedProd = masterByBarcode.get(trimmed.toLowerCase());
+    let matchedLoc = locationByBarcode.get(trimmed.toLowerCase());
+
+    if (!matchedProd) {
+      try {
+        const p = await getMasterProductByBarcode(trimmed, masterProducts);
+        if (p) {
+          matchedProd = p;
+          setFetchedProduct(p);
+        }
+      } catch {}
+    }
+
+    if (!matchedLoc) {
+      try {
+        const l = await getStorageLocationByBarcode(trimmed, storageLocations);
+        if (l) {
+          matchedLoc = l;
+          setFetchedLocation(l);
+        }
+      } catch {}
+    }
 
     if (matchedProd) {
       if (matchedLoc) {
@@ -397,6 +441,22 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
       return true;
     });
   }, [masterProducts, locationByBarcode, filterKriteria, filterLocationStatus, filterZone, tableSearch]);
+
+  // Pagination state for Directory Tab (Hemat Beban Tampilan & Kuota)
+  const [directoryPage, setDirectoryPage] = useState<number>(1);
+  const [directoryPageSize, setDirectoryPageSize] = useState<number>(24);
+
+  // Reset pagination ke halaman 1 saat filter direktori berubah
+  useEffect(() => {
+    setDirectoryPage(1);
+  }, [filterKriteria, filterLocationStatus, filterZone, tableSearch, directoryPageSize]);
+
+  const totalDirectoryPages = Math.max(1, Math.ceil(directoryItems.length / directoryPageSize));
+
+  const paginatedDirectoryItems = useMemo(() => {
+    const startIndex = (directoryPage - 1) * directoryPageSize;
+    return directoryItems.slice(startIndex, startIndex + directoryPageSize);
+  }, [directoryItems, directoryPage, directoryPageSize]);
 
   // Overall metrics
   const totalMasterCount = masterProducts.length;
@@ -1316,7 +1376,7 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
                   </p>
                 </div>
               ) : (
-                directoryItems.map((prod) => {
+                paginatedDirectoryItems.map((prod) => {
                   const loc = locationByBarcode.get(prod.barcode.toLowerCase());
                   const isConsignment = prod.procurementType === 'CONSIGNMENT';
 
@@ -1445,7 +1505,7 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
                         </td>
                       </tr>
                     ) : (
-                      directoryItems.map((prod) => {
+                      paginatedDirectoryItems.map((prod) => {
                         const loc = locationByBarcode.get(prod.barcode.toLowerCase());
                         return (
                           <tr key={prod.id} className="hover:bg-neutral-50/80 transition-colors">
@@ -1530,6 +1590,108 @@ export const StorageLocationView: React.FC<StorageLocationViewProps> = ({
               </div>
             </div>
           )}
+
+          {/* PAGINATION CONTROLS & INFO BAR FOR DIRECTORY (Hemat Kuota & Beban Tampilan) */}
+          <div className="pt-3 border-t border-neutral-200 flex flex-col md:flex-row items-center justify-between gap-3 text-xs text-neutral-600">
+            {/* Left: Summary and Page Size */}
+            <div className="flex flex-wrap items-center gap-3">
+              <div>
+                Menampilkan <strong>{directoryItems.length === 0 ? 0 : (directoryPage - 1) * directoryPageSize + 1}</strong> -{' '}
+                <strong>{Math.min(directoryPage * directoryPageSize, directoryItems.length)}</strong> dari{' '}
+                <strong>{directoryItems.length}</strong> produk (Total Master: <strong>{masterProducts.length}</strong>)
+              </div>
+
+              <div className="flex items-center gap-1.5 text-neutral-500">
+                <span>Tampilkan per hal:</span>
+                <select
+                  value={directoryPageSize}
+                  onChange={(e) => setDirectoryPageSize(Number(e.target.value))}
+                  className="px-2 py-1 border border-neutral-300 rounded-lg bg-white text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-blue-600 cursor-pointer"
+                >
+                  <option value={24}>24 item</option>
+                  <option value={48}>48 item</option>
+                  <option value={96}>96 item</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Right: Page Navigation Buttons */}
+            {totalDirectoryPages > 1 && (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setDirectoryPage(1)}
+                  disabled={directoryPage === 1}
+                  className="p-1.5 rounded-lg border border-neutral-200 bg-white hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed text-neutral-700 transition-colors cursor-pointer"
+                  title="Halaman Pertama"
+                >
+                  <ChevronsLeft className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setDirectoryPage((p) => Math.max(1, p - 1))}
+                  disabled={directoryPage === 1}
+                  className="p-1.5 rounded-lg border border-neutral-200 bg-white hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed text-neutral-700 transition-colors cursor-pointer"
+                  title="Halaman Sebelumnya"
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                </button>
+
+                <div className="flex items-center gap-1 px-1">
+                  {Array.from({ length: totalDirectoryPages }, (_, i) => i + 1)
+                    .filter((p) => {
+                      return (
+                        p === 1 ||
+                        p === totalDirectoryPages ||
+                        (p >= directoryPage - 2 && p <= directoryPage + 2)
+                      );
+                    })
+                    .map((pageNum, idx, arr) => {
+                      const prev = arr[idx - 1];
+                      const showEllipsis = prev && pageNum - prev > 1;
+
+                      return (
+                        <React.Fragment key={pageNum}>
+                          {showEllipsis && <span className="px-1 text-neutral-400">...</span>}
+                          <button
+                            type="button"
+                            onClick={() => setDirectoryPage(pageNum)}
+                            className={`min-w-8 h-8 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                              directoryPage === pageNum
+                                ? 'bg-blue-600 text-white shadow-xs'
+                                : 'border border-neutral-200 bg-white hover:bg-neutral-100 text-neutral-700'
+                            }`}
+                          >
+                            {pageNum}
+                          </button>
+                        </React.Fragment>
+                      );
+                    })}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setDirectoryPage((p) => Math.min(totalDirectoryPages, p + 1))}
+                  disabled={directoryPage === totalDirectoryPages}
+                  className="p-1.5 rounded-lg border border-neutral-200 bg-white hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed text-neutral-700 transition-colors cursor-pointer"
+                  title="Halaman Berikutnya"
+                >
+                  <ChevronRight className="w-4 h-4" />
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setDirectoryPage(totalDirectoryPages)}
+                  disabled={directoryPage === totalDirectoryPages}
+                  className="p-1.5 rounded-lg border border-neutral-200 bg-white hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed text-neutral-700 transition-colors cursor-pointer"
+                  title="Halaman Terakhir"
+                >
+                  <ChevronsRight className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       )}
 

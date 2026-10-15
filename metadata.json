@@ -1,6 +1,6 @@
 {
-  "name": "HBC Return © 2026 - AEON Health & Beauty",
-  "description": "Aplikasi pendataan barang return masuk dikategorikan per-supplier, pelacakan tenggat waktu pengambilan, barcode scanner instan, dan pengiriman notifikasi warning via WhatsApp & Gmail.",
+  "name": "HBC Backroom Management © 2026 - AEON Health & Beauty",
+  "description": "Sistem HBC Backroom Management, pendataan barang return masuk per-supplier, pelacakan tenggat waktu, database master produk Consignment & Outright, dan pemetaan lokasi rak penyimpanan.",
   "requestFramePermissions": [
     "camera"
   ],

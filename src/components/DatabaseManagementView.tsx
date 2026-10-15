@@ -1,9 +1,10 @@
-import React, { useState, useMemo, useRef } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { MasterProduct, ProcurementType, Supplier } from '../types/inventory';
 import {
   parseMasterProductsFromExcel,
   downloadMasterTemplateExcel,
 } from '../utils/excelService';
+import { SearchableSupplierSelect, SupplierOption } from './SearchableSupplierSelect';
 import {
   Lock,
   Unlock,
@@ -30,6 +31,12 @@ import {
   AlertTriangle,
   FileText,
   Loader2,
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+  Filter,
+  RotateCcw,
 } from 'lucide-react';
 
 interface DatabaseManagementViewProps {
@@ -71,6 +78,11 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTypeFilter, setSelectedTypeFilter] = useState<'ALL' | 'CONSIGNMENT' | 'OUTRIGHT'>('ALL');
   const [selectedDeptFilter, setSelectedDeptFilter] = useState('ALL');
+  const [selectedSupplierFilter, setSelectedSupplierFilter] = useState('ALL');
+
+  // Pagination state (Hemat Kuota & Beban Tampilan)
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(25);
 
   // Multi-select for deletion
   const [selectedProductIds, setSelectedProductIds] = useState<Set<string>>(new Set());
@@ -111,16 +123,48 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
     [masterProducts]
   );
 
-  // Unique departments
-  const departments = useMemo(() => {
+  // 1. Cascading Filter: Departemen dinamis menyesuaikan Kriteria
+  const cascadingDepartments = useMemo(() => {
     const set = new Set<string>();
     masterProducts.forEach((p) => {
-      if (p.department) set.add(p.department);
+      const matchType =
+        selectedTypeFilter === 'ALL' ||
+        (selectedTypeFilter === 'CONSIGNMENT' && p.procurementType === 'CONSIGNMENT') ||
+        (selectedTypeFilter === 'OUTRIGHT' && (!p.procurementType || p.procurementType === 'OUTRIGHT'));
+      if (matchType && p.department) {
+        set.add(p.department.trim());
+      }
     });
     return Array.from(set).sort();
-  }, [masterProducts]);
+  }, [masterProducts, selectedTypeFilter]);
 
-  // Filtered products list
+  // 2. Cascading Filter: Daftar Supplier dinamis menyesuaikan Kriteria & Departemen
+  const cascadingSuppliers = useMemo(() => {
+    const countsMap = new Map<string, number>();
+    masterProducts.forEach((p) => {
+      const matchType =
+        selectedTypeFilter === 'ALL' ||
+        (selectedTypeFilter === 'CONSIGNMENT' && p.procurementType === 'CONSIGNMENT') ||
+        (selectedTypeFilter === 'OUTRIGHT' && (!p.procurementType || p.procurementType === 'OUTRIGHT'));
+
+      const matchDept =
+        selectedDeptFilter === 'ALL' || (p.department && p.department.trim() === selectedDeptFilter);
+
+      if (matchType && matchDept && p.supplierName) {
+        const sName = p.supplierName.trim();
+        countsMap.set(sName, (countsMap.get(sName) || 0) + 1);
+      }
+    });
+
+    const list: SupplierOption[] = Array.from(countsMap.entries()).map(([name, count]) => ({
+      name,
+      count,
+    }));
+    list.sort((a, b) => a.name.localeCompare(b.name));
+    return list;
+  }, [masterProducts, selectedTypeFilter, selectedDeptFilter]);
+
+  // Filtered products list with 3 cascading filters + search
   const filteredProducts = useMemo(() => {
     return masterProducts.filter((p) => {
       const q = searchTerm.toLowerCase().trim();
@@ -137,11 +181,30 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
         (selectedTypeFilter === 'CONSIGNMENT' && p.procurementType === 'CONSIGNMENT') ||
         (selectedTypeFilter === 'OUTRIGHT' && (!p.procurementType || p.procurementType === 'OUTRIGHT'));
 
-      const matchDept = selectedDeptFilter === 'ALL' || p.department === selectedDeptFilter;
+      const matchDept =
+        selectedDeptFilter === 'ALL' || (p.department && p.department.trim() === selectedDeptFilter);
 
-      return matchSearch && matchType && matchDept;
+      const matchSupplier =
+        selectedSupplierFilter === 'ALL' ||
+        (p.supplierName && p.supplierName.trim().toLowerCase() === selectedSupplierFilter.toLowerCase().trim());
+
+      return matchSearch && matchType && matchDept && matchSupplier;
     });
-  }, [masterProducts, searchTerm, selectedTypeFilter, selectedDeptFilter]);
+  }, [masterProducts, searchTerm, selectedTypeFilter, selectedDeptFilter, selectedSupplierFilter]);
+
+  // Reset pagination ke halaman 1 saat filter atau kata kunci berubah
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, selectedTypeFilter, selectedDeptFilter, selectedSupplierFilter, pageSize]);
+
+  // Total Halaman
+  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / pageSize));
+
+  // Produk yang ditampilkan sesuai pagination
+  const paginatedProducts = useMemo(() => {
+    const startIndex = (currentPage - 1) * pageSize;
+    return filteredProducts.slice(startIndex, startIndex + pageSize);
+  }, [filteredProducts, currentPage, pageSize]);
 
   // Handle password submission
   const handlePasswordSubmit = (e: React.FormEvent) => {
@@ -925,102 +988,214 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
         </div>
       )}
 
-      {/* FILTER, SEARCH, & DELETION ACTION BAR */}
+      {/* 3 FILTER BERTINGKAT, SEARCH, & DELETION ACTION BAR */}
       <div className="bg-white p-5 rounded-2xl border border-neutral-200 shadow-2xs space-y-4">
-        {/* Row 1: Filter tabs and Search */}
-        <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
-          {/* Tabs */}
-          <div className="flex items-center gap-1.5 p-1 bg-neutral-100 rounded-xl overflow-x-auto">
+        {/* Row 1: Search Bar on Top */}
+        <div className="relative">
+          <Search className="w-4 h-4 text-neutral-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            placeholder="Cari cepat Barcode, SKU, Nama Barang, Departemen, atau Suplier..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full pl-10 pr-10 py-2.5 text-xs border border-neutral-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-neutral-900 bg-white shadow-2xs font-medium"
+          />
+          {searchTerm && (
             <button
-              onClick={() => setSelectedTypeFilter('ALL')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
-                selectedTypeFilter === 'ALL'
-                  ? 'bg-white text-neutral-900 shadow-xs'
-                  : 'text-neutral-600 hover:text-neutral-900'
-              }`}
+              onClick={() => setSearchTerm('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-700"
             >
-              Semua ({masterProducts.length})
+              <X className="w-4 h-4" />
             </button>
-            <button
-              onClick={() => setSelectedTypeFilter('CONSIGNMENT')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
-                selectedTypeFilter === 'CONSIGNMENT'
-                  ? 'bg-amber-500 text-white shadow-xs'
-                  : 'text-amber-800 hover:text-amber-950'
-              }`}
-            >
-              <span className="w-2 h-2 rounded-full bg-amber-400"></span>
-              Consignment ({consignmentProducts.length})
-            </button>
-            <button
-              onClick={() => setSelectedTypeFilter('OUTRIGHT')}
-              className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
-                selectedTypeFilter === 'OUTRIGHT'
-                  ? 'bg-blue-600 text-white shadow-xs'
-                  : 'text-blue-800 hover:text-blue-950'
-              }`}
-            >
-              <span className="w-2 h-2 rounded-full bg-blue-300"></span>
-              Outright ({outrightProducts.length})
-            </button>
+          )}
+        </div>
+
+        {/* Row 2: 3 Pilihan Filter Bertingkat: 1. Kriteria | 2. Departemen | 3. Suplier (Searchable Dropdown) */}
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-neutral-50/80 p-3.5 rounded-xl border border-neutral-200/90">
+          {/* Filter 1: Kriteria */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-bold text-neutral-600 flex items-center gap-1.5 uppercase tracking-wider">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#b8126f]"></span>
+              <span>1. Kriteria Pengadaan</span>
+            </label>
+            <div className="flex items-center gap-1 p-0.5 bg-white border border-neutral-300 rounded-xl shadow-2xs">
+              <button
+                type="button"
+                onClick={() => setSelectedTypeFilter('ALL')}
+                className={`flex-1 py-1.5 px-1.5 text-[11px] font-semibold rounded-lg transition-colors text-center cursor-pointer ${
+                  selectedTypeFilter === 'ALL'
+                    ? 'bg-neutral-900 text-white shadow-xs'
+                    : 'text-neutral-600 hover:text-neutral-900'
+                }`}
+              >
+                Semua ({masterProducts.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTypeFilter('CONSIGNMENT')}
+                className={`flex-1 py-1.5 px-1.5 text-[11px] font-semibold rounded-lg transition-colors text-center cursor-pointer ${
+                  selectedTypeFilter === 'CONSIGNMENT'
+                    ? 'bg-amber-500 text-white shadow-xs'
+                    : 'text-amber-800 hover:bg-amber-50'
+                }`}
+              >
+                Konsinyasi ({consignmentProducts.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setSelectedTypeFilter('OUTRIGHT')}
+                className={`flex-1 py-1.5 px-1.5 text-[11px] font-semibold rounded-lg transition-colors text-center cursor-pointer ${
+                  selectedTypeFilter === 'OUTRIGHT'
+                    ? 'bg-blue-600 text-white shadow-xs'
+                    : 'text-blue-800 hover:bg-blue-50'
+                }`}
+              >
+                Outright ({outrightProducts.length})
+              </button>
+            </div>
           </div>
 
-          {/* Search bar & Dept filter */}
-          <div className="flex items-center gap-2 flex-1 max-w-lg">
-            <div className="relative flex-1">
-              <Search className="w-4 h-4 text-neutral-400 absolute left-3 top-1/2 -translate-y-1/2" />
-              <input
-                type="text"
-                placeholder="Cari Barcode, SKU, Produk, atau Suplier..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-xs border border-neutral-300 rounded-xl focus:outline-none focus:ring-1 focus:ring-neutral-900 bg-white"
-              />
-              {searchTerm && (
-                <button
-                  onClick={() => setSearchTerm('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-neutral-400 hover:text-neutral-600"
-                >
-                  <X className="w-3.5 h-3.5" />
-                </button>
-              )}
-            </div>
+          {/* Filter 2: Departemen (Dinamis menyesuaikan Kriteria) */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-bold text-neutral-600 flex items-center gap-1.5 uppercase tracking-wider">
+              <span className="w-1.5 h-1.5 rounded-full bg-blue-600"></span>
+              <span>2. Departemen / Kategori</span>
+            </label>
+            <select
+              value={selectedDeptFilter}
+              onChange={(e) => setSelectedDeptFilter(e.target.value)}
+              className="w-full px-3 py-2 text-xs border border-neutral-300 rounded-xl bg-white focus:outline-none focus:ring-1 focus:ring-neutral-900 shadow-2xs font-medium text-neutral-800 cursor-pointer"
+            >
+              <option value="ALL">Semua Departemen ({cascadingDepartments.length} Dept)</option>
+              {cascadingDepartments.map((dept) => (
+                <option key={dept} value={dept}>
+                  {dept}
+                </option>
+              ))}
+            </select>
+          </div>
 
-            {departments.length > 0 && (
-              <select
-                value={selectedDeptFilter}
-                onChange={(e) => setSelectedDeptFilter(e.target.value)}
-                className="px-3 py-2 text-xs border border-neutral-300 rounded-xl bg-white focus:outline-none focus:ring-1 focus:ring-neutral-900"
-              >
-                <option value="ALL">Semua Dept</option>
-                {departments.map((dept) => (
-                  <option key={dept} value={dept}>
-                    {dept}
-                  </option>
-                ))}
-              </select>
-            )}
+          {/* Filter 3: Suplier (Searchable Dropdown dinamis menyesuaikan Kriteria & Dept) */}
+          <div className="space-y-1.5">
+            <label className="text-[11px] font-bold text-neutral-600 flex items-center gap-1.5 uppercase tracking-wider">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-600"></span>
+              <span>3. Suplier (Searchable Dropdown)</span>
+            </label>
+            <SearchableSupplierSelect
+              options={cascadingSuppliers}
+              selectedValue={selectedSupplierFilter}
+              onSelect={(sup) => setSelectedSupplierFilter(sup)}
+              placeholder="Cari & Pilih Suplier..."
+              allLabel="Semua Suplier"
+            />
           </div>
         </div>
 
-        {/* Row 2: DELETION ACTION BAR (Hapus Terpilih / Kosongkan Semua) */}
+        {/* Active Filter Chips & Reset All Button */}
+        {(selectedTypeFilter !== 'ALL' ||
+          selectedDeptFilter !== 'ALL' ||
+          selectedSupplierFilter !== 'ALL' ||
+          searchTerm) && (
+          <div className="flex flex-wrap items-center gap-2 pt-1 text-xs text-neutral-500">
+            <span className="font-semibold text-neutral-700 flex items-center gap-1">
+              <Filter className="w-3.5 h-3.5 text-neutral-500" />
+              Filter Aktif:
+            </span>
+            {selectedTypeFilter !== 'ALL' && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-neutral-200 text-neutral-800 text-[11px] font-medium">
+                Kriteria: <strong>{selectedTypeFilter === 'CONSIGNMENT' ? 'Konsinyasi' : 'Outright'}</strong>
+                <button
+                  type="button"
+                  onClick={() => setSelectedTypeFilter('ALL')}
+                  className="hover:text-rose-600 cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            )}
+            {selectedDeptFilter !== 'ALL' && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-blue-100 text-blue-900 text-[11px] font-medium">
+                Dept: <strong>{selectedDeptFilter}</strong>
+                <button
+                  type="button"
+                  onClick={() => setSelectedDeptFilter('ALL')}
+                  className="hover:text-rose-600 cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            )}
+            {selectedSupplierFilter !== 'ALL' && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-100 text-emerald-900 text-[11px] font-medium">
+                Suplier: <strong>{selectedSupplierFilter}</strong>
+                <button
+                  type="button"
+                  onClick={() => setSelectedSupplierFilter('ALL')}
+                  className="hover:text-rose-600 cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            )}
+            {searchTerm && (
+              <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-neutral-100 text-neutral-800 text-[11px] font-medium">
+                Cari: <strong>"{searchTerm}"</strong>
+                <button
+                  type="button"
+                  onClick={() => setSearchTerm('')}
+                  className="hover:text-rose-600 cursor-pointer"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </span>
+            )}
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedTypeFilter('ALL');
+                setSelectedDeptFilter('ALL');
+                setSelectedSupplierFilter('ALL');
+                setSearchTerm('');
+              }}
+              className="text-[11px] font-bold text-rose-600 hover:text-rose-800 hover:underline flex items-center gap-1 ml-auto cursor-pointer"
+            >
+              <RotateCcw className="w-3 h-3" />
+              <span>Reset Semua Filter</span>
+            </button>
+          </div>
+        )}
+
+        {/* Row 3: DELETION ACTION BAR (Hapus Terpilih / Kosongkan Semua) */}
         <div className="pt-3 border-t border-neutral-200 flex flex-wrap items-center justify-between gap-3 bg-neutral-50/70 p-3 rounded-xl">
           <div className="flex items-center gap-2">
             <input
               type="checkbox"
               id="select-all-master"
               checked={
-                filteredProducts.length > 0 &&
-                selectedProductIds.size === filteredProducts.length
+                paginatedProducts.length > 0 &&
+                paginatedProducts.every((p) => selectedProductIds.has(p.id))
               }
-              onChange={handleToggleSelectAll}
+              onChange={() => {
+                const isAllPageSelected =
+                  paginatedProducts.length > 0 &&
+                  paginatedProducts.every((p) => selectedProductIds.has(p.id));
+                if (isAllPageSelected) {
+                  const next = new Set(selectedProductIds);
+                  paginatedProducts.forEach((p) => next.delete(p.id));
+                  setSelectedProductIds(next);
+                } else {
+                  const next = new Set(selectedProductIds);
+                  paginatedProducts.forEach((p) => next.add(p.id));
+                  setSelectedProductIds(next);
+                }
+              }}
               className="w-4 h-4 rounded text-neutral-900 focus:ring-0 cursor-pointer"
             />
             <label
               htmlFor="select-all-master"
               className="text-xs font-semibold text-neutral-700 cursor-pointer select-none"
             >
-              Pilih Semua ({filteredProducts.length} produk di tabel)
+              Pilih Halaman Ini ({paginatedProducts.length} produk)
             </label>
             {selectedProductIds.size > 0 && (
               <span className="text-xs px-2 py-0.5 rounded-full bg-neutral-900 text-white font-mono font-bold">
@@ -1063,7 +1238,7 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
           </div>
         </div>
 
-        {/* TABLE OF MASTER PRODUCTS */}
+        {/* TABLE OF MASTER PRODUCTS (PAGINATED) */}
         <div className="border border-neutral-200 rounded-xl overflow-hidden shadow-2xs">
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs text-neutral-700 border-collapse">
@@ -1081,20 +1256,20 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-neutral-200 bg-white">
-                {filteredProducts.length === 0 ? (
+                {paginatedProducts.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="py-12 text-center text-neutral-400">
                       <FileSpreadsheet className="w-10 h-10 mx-auto text-neutral-300 mb-2" />
                       <p className="font-semibold text-neutral-700">
-                        Tidak ada data produk yang cocok
+                        Tidak ada data produk yang cocok dengan filter
                       </p>
                       <p className="text-xs text-neutral-400 mt-1 max-w-sm mx-auto">
-                        Silakan unggah file database XLSX melalui jalur <strong>Consignment</strong> atau <strong>Outright</strong> di atas.
+                        Coba sesuaikan pilihan kriteria, departemen, suplier, atau kata kunci pencarian Anda.
                       </p>
                     </td>
                   </tr>
                 ) : (
-                  filteredProducts.map((p) => {
+                  paginatedProducts.map((p) => {
                     const isSelected = selectedProductIds.has(p.id);
                     return (
                       <tr
@@ -1159,7 +1334,7 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
                             <button
                               type="button"
                               onClick={() => handleStartEdit(p)}
-                              className="p-1.5 rounded text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 transition-colors"
+                              className="p-1.5 rounded text-neutral-500 hover:text-neutral-900 hover:bg-neutral-100 transition-colors cursor-pointer"
                               title="Edit Produk"
                             >
                               <Edit className="w-3.5 h-3.5" />
@@ -1183,16 +1358,112 @@ export const DatabaseManagementView: React.FC<DatabaseManagementViewProps> = ({
           </div>
         </div>
 
-        {/* Footer info */}
-        <div className="flex flex-col sm:flex-row items-center justify-between gap-2 text-xs text-neutral-500 pt-2">
-          <div>
-            Menampilkan <strong>{filteredProducts.length}</strong> dari{' '}
-            <strong>{masterProducts.length}</strong> total produk tersinkronisasi.
+        {/* PAGINATION CONTROLS & INFO BAR */}
+        <div className="pt-3 border-t border-neutral-200 flex flex-col md:flex-row items-center justify-between gap-3 text-xs text-neutral-600">
+          {/* Left: Summary and Page Size Selector */}
+          <div className="flex flex-wrap items-center gap-3">
+            <div>
+              Menampilkan <strong>{filteredProducts.length === 0 ? 0 : (currentPage - 1) * pageSize + 1}</strong> -{' '}
+              <strong>{Math.min(currentPage * pageSize, filteredProducts.length)}</strong> dari{' '}
+              <strong>{filteredProducts.length}</strong> produk (Total Master:{' '}
+              <strong>{masterProducts.length}</strong> item)
+            </div>
+
+            <div className="flex items-center gap-1.5 text-neutral-500">
+              <span>Limit per hal:</span>
+              <select
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value))}
+                className="px-2 py-1 border border-neutral-300 rounded-lg bg-white text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-neutral-900 cursor-pointer"
+              >
+                <option value={25}>25 item</option>
+                <option value={50}>50 item</option>
+                <option value={100}>100 item</option>
+              </select>
+            </div>
           </div>
-          <div className="flex items-center gap-1.5 text-[11px] text-neutral-400">
-            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
-            <span>Realtime Firestore Cloud Active</span>
-          </div>
+
+          {/* Right: Page Buttons */}
+          {totalPages > 1 && (
+            <div className="flex items-center gap-1">
+              {/* First Page */}
+              <button
+                type="button"
+                onClick={() => setCurrentPage(1)}
+                disabled={currentPage === 1}
+                className="p-1.5 rounded-lg border border-neutral-200 bg-white hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed text-neutral-700 transition-colors cursor-pointer"
+                title="Halaman Pertama"
+              >
+                <ChevronsLeft className="w-4 h-4" />
+              </button>
+
+              {/* Prev Page */}
+              <button
+                type="button"
+                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                disabled={currentPage === 1}
+                className="p-1.5 rounded-lg border border-neutral-200 bg-white hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed text-neutral-700 transition-colors cursor-pointer"
+                title="Halaman Sebelumnya"
+              >
+                <ChevronLeft className="w-4 h-4" />
+              </button>
+
+              {/* Page Numbers */}
+              <div className="flex items-center gap-1 px-1">
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter((p) => {
+                    return (
+                      p === 1 ||
+                      p === totalPages ||
+                      (p >= currentPage - 2 && p <= currentPage + 2)
+                    );
+                  })
+                  .map((pageNumber, idx, arr) => {
+                    const prev = arr[idx - 1];
+                    const showEllipsis = prev && pageNumber - prev > 1;
+
+                    return (
+                      <React.Fragment key={pageNumber}>
+                        {showEllipsis && <span className="px-1 text-neutral-400">...</span>}
+                        <button
+                          type="button"
+                          onClick={() => setCurrentPage(pageNumber)}
+                          className={`min-w-8 h-8 px-2 rounded-lg text-xs font-bold transition-all cursor-pointer ${
+                            currentPage === pageNumber
+                              ? 'bg-neutral-900 text-white shadow-xs'
+                              : 'border border-neutral-200 bg-white hover:bg-neutral-100 text-neutral-700'
+                          }`}
+                        >
+                          {pageNumber}
+                        </button>
+                      </React.Fragment>
+                    );
+                  })}
+              </div>
+
+              {/* Next Page */}
+              <button
+                type="button"
+                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                disabled={currentPage === totalPages}
+                className="p-1.5 rounded-lg border border-neutral-200 bg-white hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed text-neutral-700 transition-colors cursor-pointer"
+                title="Halaman Berikutnya"
+              >
+                <ChevronRight className="w-4 h-4" />
+              </button>
+
+              {/* Last Page */}
+              <button
+                type="button"
+                onClick={() => setCurrentPage(totalPages)}
+                disabled={currentPage === totalPages}
+                className="p-1.5 rounded-lg border border-neutral-200 bg-white hover:bg-neutral-100 disabled:opacity-30 disabled:cursor-not-allowed text-neutral-700 transition-colors cursor-pointer"
+                title="Halaman Terakhir"
+              >
+                <ChevronsRight className="w-4 h-4" />
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
